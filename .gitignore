@@ -1,0 +1,14 @@
+# SQLite Database & local runtime data
+data/*.sqlite
+data/*.sqlite3
+data/*.db
+data/*.json
+
+# Uploaded campaign files (images/maps)
+uploads/*
+!uploads/.gitkeep
+
+# OS / Temporary files
+.DS_Store
+Thumbs.db
+*.log
