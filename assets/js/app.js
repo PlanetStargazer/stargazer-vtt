@@ -33,6 +33,7 @@
         activeTool: 'pointer',
         imageLibrarySearch: '',
         tokenLibrarySearch: '',
+        previewGridTab: null,
         zoomLevel: 1,
         diceEngine: null
     };
@@ -821,7 +822,7 @@
             return;
         }
 
-        const gridType = ['square', 'hex_v', 'hex_h', 'isometric'].includes(tab.grid_type) ? tab.grid_type : 'square';
+        const gridType = ['square', 'hex_v', 'hex_h'].includes(tab.grid_type) ? tab.grid_type : 'square';
         const cellPx = Math.max(15, Math.min(400, Number(tab.grid_cell_px) || 50));
         const gridColor = tab.grid_color || 'rgba(255, 255, 255, 0.25)';
         const offsetX = Number(tab.grid_offset_x) || 0;
@@ -872,15 +873,6 @@
                           fill="none" stroke="${escapeHtml(gridColor)}" stroke-width="1" />
                 </pattern>
             `;
-        } else if (gridType === 'isometric') {
-            // 2:1 Isometric diamond grid
-            const W = cellPx * 2;
-            const H = cellPx;
-            patternDef = `
-                <pattern id="${patId}" width="${W}" height="${H}" patternUnits="userSpaceOnUse" x="${offsetX}" y="${offsetY}">
-                    <path d="M 0 0 L ${W} ${H} M ${W} 0 L 0 ${H}" fill="none" stroke="${escapeHtml(gridColor)}" stroke-width="1" />
-                </pattern>
-            `;
         }
 
         svg.innerHTML = `
@@ -892,6 +884,7 @@
     }
 
     function renderMapTabsAndGrid() {
+        state.previewGridTab = null;
         const listEl = $('map-tabs-list');
         if (!listEl) return;
 
@@ -905,7 +898,7 @@
                   (canDelete ? `<button type="button" class="map-tab-icon-btn" data-delete-map-tab="${tab.id}" title="Delete map tab">✕</button>` : '')
                 : '';
 
-            const gridTypeShort = tab.grid_type === 'hex_v' ? 'Hex V' : (tab.grid_type === 'hex_h' ? 'Hex H' : (tab.grid_type === 'isometric' ? 'Iso' : 'Square'));
+            const gridTypeShort = tab.grid_type === 'hex_v' ? 'Hex V' : (tab.grid_type === 'hex_h' ? 'Hex H' : 'Square');
 
             return `
                 <div class="map-tab-item ${isViewing ? 'active' : ''}" data-select-map-tab="${tab.id}" title="Click tab to view/edit in secrecy">
@@ -925,7 +918,6 @@
         const activeTab = state.mapTabs.find(t => t.id === state.activeMapId) || state.mapTabs[0];
         if (activeTab) {
             const baseCellPx = Math.max(15, Math.min(400, Number(activeTab.grid_cell_px) || 50));
-            const cellChanged = state.baseCellPx !== baseCellPx;
             state.baseCellPx = baseCellPx;
 
             // Render exact SVG grid lines (no rectangular aliasing)
@@ -960,12 +952,12 @@
                 }
             }
 
-            if (cellChanged && !state.draggingTokenId && state.boardTokens.length > 0) {
+            if (!state.draggingTokenId && state.boardTokens.length > 0) {
                 syncBoardTokens(state.boardTokens);
             }
             const indicator = $('grid-scale-indicator');
             if (indicator) {
-                const gridName = activeTab.grid_type === 'hex_v' ? 'Hex (Vertical)' : (activeTab.grid_type === 'hex_h' ? 'Hex (Horizontal)' : (activeTab.grid_type === 'isometric' ? 'Isometric' : 'Square'));
+                const gridName = activeTab.grid_type === 'hex_v' ? 'Hex (Vertical)' : (activeTab.grid_type === 'hex_h' ? 'Hex (Horizontal)' : 'Square');
                 indicator.textContent = `${activeTab.name} — ${gridName} (${baseCellPx}px / cell)`;
             }
         }
@@ -1251,6 +1243,114 @@
         };
     }
 
+    function getActiveTabForGrid() {
+        if (state.previewGridTab) return state.previewGridTab;
+        return state.mapTabs.find(t => t.id === Number(state.activeMapId)) || state.mapTabs[0] || null;
+    }
+
+    function getGridCellCenter(col, row, tab) {
+        const c = Number(col) || 0;
+        const r = Number(row) || 0;
+        const currentTab = tab || getActiveTabForGrid() || {};
+        const gridType = ['square', 'hex_v', 'hex_h'].includes(currentTab.grid_type) ? currentTab.grid_type : 'square';
+        const cellPx = Math.max(15, Math.min(400, Number(currentTab.grid_cell_px) || state.baseCellPx || 50));
+        const offsetX = Number(currentTab.grid_offset_x) || 0;
+        const offsetY = Number(currentTab.grid_offset_y) || 0;
+
+        if (gridType === 'hex_v') {
+            // Pointy-topped hexagons: W = cellPx, R = cellPx / sqrt(3), H = 3 * R
+            const W = cellPx;
+            const R = cellPx / Math.sqrt(3);
+            const cx = offsetX + (c + 1) * (W / 2);
+            const cy = offsetY + R + r * (3 * R) + ((c % 2 !== 0) ? (1.5 * R) : 0);
+            return { cx, cy, size: cellPx };
+        } else if (gridType === 'hex_h') {
+            // Flat-topped hexagons: H = cellPx, R = cellPx / sqrt(3), W = 3 * R
+            const H = cellPx;
+            const R = cellPx / Math.sqrt(3);
+            const cy = offsetY + (r + 1) * (H / 2);
+            const cx = offsetX + R + c * (3 * R) + ((r % 2 !== 0) ? (1.5 * R) : 0);
+            return { cx, cy, size: cellPx };
+        } else {
+            // Default square grid
+            const cx = offsetX + (c + 0.5) * cellPx;
+            const cy = offsetY + (r + 0.5) * cellPx;
+            return { cx, cy, size: cellPx };
+        }
+    }
+
+    function snapPointToGrid(px, py, tab) {
+        const currentTab = tab || getActiveTabForGrid() || {};
+        const gridType = ['square', 'hex_v', 'hex_h'].includes(currentTab.grid_type) ? currentTab.grid_type : 'square';
+        const cellPx = Math.max(15, Math.min(400, Number(currentTab.grid_cell_px) || state.baseCellPx || 50));
+        const offsetX = Number(currentTab.grid_offset_x) || 0;
+        const offsetY = Number(currentTab.grid_offset_y) || 0;
+
+        const x = px - offsetX;
+        const y = py - offsetY;
+
+        if (gridType === 'hex_v') {
+            const W = cellPx;
+            const R = cellPx / Math.sqrt(3);
+            const H = 3 * R;
+            const approxCol = Math.max(0, Math.round(x / (W / 2) - 1));
+            const approxRow = Math.max(0, Math.round((y - R) / H));
+
+            let bestCol = approxCol;
+            let bestRow = approxRow;
+            let minDistSq = Infinity;
+
+            for (let dc = -2; dc <= 2; dc++) {
+                const c = approxCol + dc;
+                if (c < 0) continue;
+                for (let dr = -2; dr <= 2; dr++) {
+                    const r = approxRow + dr;
+                    if (r < 0) continue;
+                    const { cx, cy } = getGridCellCenter(c, r, currentTab);
+                    const dsq = (px - cx) ** 2 + (py - cy) ** 2;
+                    if (dsq < minDistSq) {
+                        minDistSq = dsq;
+                        bestCol = c;
+                        bestRow = r;
+                    }
+                }
+            }
+            return { gridX: bestCol, gridY: bestRow };
+        } else if (gridType === 'hex_h') {
+            const H = cellPx;
+            const R = cellPx / Math.sqrt(3);
+            const W = 3 * R;
+            const approxRow = Math.max(0, Math.round(y / (H / 2) - 1));
+            const approxCol = Math.max(0, Math.round((x - R) / W));
+
+            let bestCol = approxCol;
+            let bestRow = approxRow;
+            let minDistSq = Infinity;
+
+            for (let dr = -2; dr <= 2; dr++) {
+                const r = approxRow + dr;
+                if (r < 0) continue;
+                for (let dc = -2; dc <= 2; dc++) {
+                    const c = approxCol + dc;
+                    if (c < 0) continue;
+                    const { cx, cy } = getGridCellCenter(c, r, currentTab);
+                    const dsq = (px - cx) ** 2 + (py - cy) ** 2;
+                    if (dsq < minDistSq) {
+                        minDistSq = dsq;
+                        bestCol = c;
+                        bestRow = r;
+                    }
+                }
+            }
+            return { gridX: bestCol, gridY: bestRow };
+        } else {
+            // Square grid
+            const gridX = Math.max(0, Math.floor(x / cellPx));
+            const gridY = Math.max(0, Math.floor(y / cellPx));
+            return { gridX, gridY };
+        }
+    }
+
     function formatDistanceUnit(unit) {
         if (!unit) return 'ft';
         const u = unit.toLowerCase().trim();
@@ -1273,7 +1373,7 @@
         const dy = y2 - y1;
         const distPx = Math.hypot(dx, dy);
 
-        const activeTab = state.mapTabs.find(t => t.id === Number(state.activeMapId)) || state.mapTabs[0] || {};
+        const activeTab = getActiveTabForGrid() || {};
         const cellPx = Number(activeTab.grid_cell_px) || state.baseCellPx || 50;
         const gridSize = (activeTab.grid_size !== undefined && activeTab.grid_size !== null && Number(activeTab.grid_size) > 0) ? Number(activeTab.grid_size) : 5;
         const rawUnit = activeTab.grid_unit || 'feet';
@@ -1676,18 +1776,15 @@
     }
 
     function updateBoardTokenElement(el, tok) {
-        const cellPx = state.baseCellPx || 50;
+        const activeTab = getActiveTabForGrid();
+        const cellPos = getGridCellCenter(tok.grid_x, tok.grid_y, activeTab);
         const tileSize = Math.max(1, Math.min(12, Number(tok.tile_size) || 1));
-        const gridX = Math.max(0, Number(tok.grid_x) || 0);
-        const gridY = Math.max(0, Number(tok.grid_y) || 0);
-        const activeTab = state.mapTabs.find(t => t.id === state.activeMapId);
-        const offsetX = activeTab ? (Number(activeTab.grid_offset_x) || 0) : 0;
-        const offsetY = activeTab ? (Number(activeTab.grid_offset_y) || 0) : 0;
+        const tokenDiameter = tileSize * cellPos.size;
 
-        el.style.left = `${gridX * cellPx + offsetX}px`;
-        el.style.top = `${gridY * cellPx + offsetY}px`;
-        el.style.width = `${tileSize * cellPx}px`;
-        el.style.height = `${tileSize * cellPx}px`;
+        el.style.left = `${cellPos.cx - tokenDiameter / 2}px`;
+        el.style.top = `${cellPos.cy - tokenDiameter / 2}px`;
+        el.style.width = `${tokenDiameter}px`;
+        el.style.height = `${tokenDiameter}px`;
         // Always above all map/handout images (1..4999) and grid (5000), while 3D dice overlay sits above tabletop-plane
         el.style.zIndex = String(6000 + Math.max(1, Number(tok.z_index) || 1));
 
@@ -1719,40 +1816,44 @@
             e.stopPropagation();
             state.draggingTokenId = tokenId;
 
-            const cellPx = state.baseCellPx || 50;
-            const activeTab = state.mapTabs.find(t => t.id === state.activeMapId);
-            const offsetX = activeTab ? (Number(activeTab.grid_offset_x) || 0) : 0;
-            const offsetY = activeTab ? (Number(activeTab.grid_offset_y) || 0) : 0;
-            const startMouseX = e.clientX;
-            const startMouseY = e.clientY;
+            const activeTab = getActiveTabForGrid();
             const origGridX = Number(currentTok.grid_x) || 0;
             const origGridY = Number(currentTok.grid_y) || 0;
             const tileSize = Math.max(1, Math.min(12, Number(currentTok.tile_size) || 1));
             const zoom = state.zoomLevel || 1;
 
+            const startPos = getGridCellCenter(origGridX, origGridY, activeTab);
+            const tokenDiameter = tileSize * startPos.size;
+            const origCenterX = startPos.cx;
+            const origCenterY = startPos.cy;
+
             let snappedGridX = origGridX;
             let snappedGridY = origGridY;
 
-            // Center points of origin grid tile and destination grid tile
-            const startCenterX = (origGridX + tileSize / 2) * cellPx + offsetX;
-            const startCenterY = (origGridY + tileSize / 2) * cellPx + offsetY;
-
             const updateTokenMovementRuler = (targetGridX, targetGridY) => {
-                const targetCenterX = (targetGridX + tileSize / 2) * cellPx + offsetX;
-                const targetCenterY = (targetGridY + tileSize / 2) * cellPx + offsetY;
-                renderRuler(startCenterX, startCenterY, targetCenterX, targetCenterY);
+                const targetPos = getGridCellCenter(targetGridX, targetGridY, activeTab);
+                renderRuler(origCenterX, origCenterY, targetPos.cx, targetPos.cy);
             };
 
             // Show ruler measuring from start tile center as long as mouse is pressed
             updateTokenMovementRuler(origGridX, origGridY);
 
+            const startMouseX = e.clientX;
+            const startMouseY = e.clientY;
+
             const onMove = (moveEvent) => {
                 const dx = (moveEvent.clientX - startMouseX) / zoom;
                 const dy = (moveEvent.clientY - startMouseY) / zoom;
-                snappedGridX = Math.max(0, Math.round((origGridX * cellPx + dx) / cellPx));
-                snappedGridY = Math.max(0, Math.round((origGridY * cellPx + dy) / cellPx));
-                el.style.left = `${snappedGridX * cellPx + offsetX}px`;
-                el.style.top = `${snappedGridY * cellPx + offsetY}px`;
+                const curCenterX = origCenterX + dx;
+                const curCenterY = origCenterY + dy;
+
+                const snapped = snapPointToGrid(curCenterX, curCenterY, activeTab);
+                snappedGridX = snapped.gridX;
+                snappedGridY = snapped.gridY;
+
+                const newPos = getGridCellCenter(snappedGridX, snappedGridY, activeTab);
+                el.style.left = `${newPos.cx - tokenDiameter / 2}px`;
+                el.style.top = `${newPos.cy - tokenDiameter / 2}px`;
                 updateTokenMovementRuler(snappedGridX, snappedGridY);
             };
 
@@ -2654,10 +2755,13 @@
                     closeTokenContextMenu();
                     hide($('modal-token-library'));
                     const mapId = getTargetMapId();
-                    const cellPx = state.baseCellPx || 50;
+                    const activeTab = getActiveTabForGrid();
                     const area = $('tabletop-scroll-area');
-                    const spawnGridX = Math.max(0, Math.round(((area ? area.scrollLeft : 0) + 120 + Math.random() * 80) / cellPx));
-                    const spawnGridY = Math.max(0, Math.round(((area ? area.scrollTop : 0) + 90 + Math.random() * 80) / cellPx));
+                    const rawX = (area ? area.scrollLeft : 0) + 120 + Math.random() * 80;
+                    const rawY = (area ? area.scrollTop : 0) + 90 + Math.random() * 80;
+                    const snapped = snapPointToGrid(rawX, rawY, activeTab);
+                    const spawnGridX = snapped.gridX;
+                    const spawnGridY = snapped.gridY;
                     try {
                         const res = await apiCall('update_token', {
                             token_id: tokenId,
@@ -2789,15 +2893,17 @@
                 if (!preview) return;
 
                 if (type === 'token') {
+                    const activeTab = getActiveTabForGrid();
                     const tok = state.libraryTokens.find(t => t.id === assetId);
                     const cellPx = state.baseCellPx || 50;
                     const tileSize = tok ? Math.max(1, Number(tok.tile_size) || 1) : 1;
-                    const gridX = Math.max(0, Math.floor((planeX - (tileSize * cellPx) / 2 + cellPx / 2) / cellPx));
-                    const gridY = Math.max(0, Math.floor((planeY - (tileSize * cellPx) / 2 + cellPx / 2) / cellPx));
-                    preview.style.left = `${gridX * cellPx}px`;
-                    preview.style.top = `${gridY * cellPx}px`;
-                    preview.style.width = `${tileSize * cellPx}px`;
-                    preview.style.height = `${tileSize * cellPx}px`;
+                    const snapped = snapPointToGrid(planeX, planeY, activeTab);
+                    const cellPos = getGridCellCenter(snapped.gridX, snapped.gridY, activeTab);
+                    const tokenDiameter = tileSize * cellPx;
+                    preview.style.left = `${cellPos.cx - tokenDiameter / 2}px`;
+                    preview.style.top = `${cellPos.cy - tokenDiameter / 2}px`;
+                    preview.style.width = `${tokenDiameter}px`;
+                    preview.style.height = `${tokenDiameter}px`;
                 } else if (type === 'image') {
                     const img = state.libraryImages.find(i => i.id === assetId);
                     const w = img ? (Number(img.width) || 480) : 480;
@@ -2823,11 +2929,10 @@
                     const { planeX, planeY } = computeTabletopCoords(upEvent.clientX, upEvent.clientY);
                     if (type === 'token') {
                         hide($('modal-token-library'));
-                        const tok = state.libraryTokens.find(t => t.id === assetId);
-                        const cellPx = state.baseCellPx || 50;
-                        const tileSize = tok ? Math.max(1, Number(tok.tile_size) || 1) : 1;
-                        const gridX = Math.max(0, Math.floor((planeX - (tileSize * cellPx) / 2 + cellPx / 2) / cellPx));
-                        const gridY = Math.max(0, Math.floor((planeY - (tileSize * cellPx) / 2 + cellPx / 2) / cellPx));
+                        const activeTab = getActiveTabForGrid();
+                        const snapped = snapPointToGrid(planeX, planeY, activeTab);
+                        const gridX = snapped.gridX;
+                        const gridY = snapped.gridY;
                         try {
                             const res = await apiCall('update_token', {
                                 token_id: assetId,
@@ -2878,10 +2983,13 @@
                 } else if (type === 'token') {
                     // Clicking a token in the Token Library also places it onto the active map
                     hide($('modal-token-library'));
+                    const activeTab = getActiveTabForGrid();
                     const area = $('tabletop-scroll-area');
-                    const cellPx = state.baseCellPx || 50;
-                    const spawnGridX = Math.max(0, Math.round(((area ? area.scrollLeft : 0) + 120 + Math.random() * 80) / cellPx));
-                    const spawnGridY = Math.max(0, Math.round(((area ? area.scrollTop : 0) + 90 + Math.random() * 80) / cellPx));
+                    const rawX = (area ? area.scrollLeft : 0) + 120 + Math.random() * 80;
+                    const rawY = (area ? area.scrollTop : 0) + 90 + Math.random() * 80;
+                    const snapped = snapPointToGrid(rawX, rawY, activeTab);
+                    const spawnGridX = snapped.gridX;
+                    const spawnGridY = snapped.gridY;
                     try {
                         const res = await apiCall('update_token', {
                             token_id: assetId,
@@ -3082,6 +3190,7 @@
             if (!tab) return;
             const vals = getMapTabFormValues();
             const previewTab = Object.assign({}, tab, vals);
+            state.previewGridTab = previewTab;
             renderTabletopGridSvg(previewTab);
             state.baseCellPx = vals.grid_cell_px;
             syncBoardTokens(state.boardTokens);

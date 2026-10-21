@@ -553,7 +553,7 @@ class Storage {
             'name' => (string)$tab['name'],
             'grid_size' => (float)($tab['grid_size'] ?? 5),
             'grid_unit' => in_array($tab['grid_unit'] ?? '', ['feet', 'yards', 'meters'], true) ? $tab['grid_unit'] : 'feet',
-            'grid_type' => in_array($tab['grid_type'] ?? '', ['square', 'hex_v', 'hex_h', 'isometric'], true) ? $tab['grid_type'] : 'square',
+            'grid_type' => in_array($tab['grid_type'] ?? '', ['square', 'hex_v', 'hex_h'], true) ? $tab['grid_type'] : 'square',
             'grid_cell_px' => max(15, min(400, (int)($tab['grid_cell_px'] ?? 50))),
             'grid_color' => (string)($tab['grid_color'] ?? 'rgba(255, 255, 255, 0.2)'),
             'grid_offset_x' => (int)($tab['grid_offset_x'] ?? 0),
@@ -642,7 +642,7 @@ class Storage {
         float $backgroundWidth = 0,
         float $backgroundHeight = 0
     ): ?array {
-        $gridType = in_array($gridType, ['square', 'hex_v', 'hex_h', 'isometric'], true) ? $gridType : 'square';
+        $gridType = in_array($gridType, ['square', 'hex_v', 'hex_h'], true) ? $gridType : 'square';
         $gridCellPx = max(15, min(400, $gridCellPx));
         $gridColor = trim($gridColor) !== '' ? trim($gridColor) : 'rgba(255, 255, 255, 0.2)';
 

@@ -21,7 +21,6 @@ This project was engineered and coded by **Antigravity** (Google DeepMind's Adva
   - **Square Grid** (Standard D&D / d20 systems)
   - **Hexagonal Grid (Vertical / Pointy-topped)**
   - **Hexagonal Grid (Horizontal / Flat-topped)**
-  - **Isometric Grid**
 - **Per-Tab Grid Calibration**: Configure cell pixel size (e.g. 50px), grid line color, line opacity, in-game distance scale (e.g. 5 ft, 1.5 m, 2 yd), and horizontal/vertical pixel offsets for pre-gridded battlemaps.
 - **Map Background Images**: Set high-resolution background maps per tab with automatic scaling and placement.
 

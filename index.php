@@ -375,14 +375,6 @@ session_start();
                                         <span class="grid-type-desc">Flat-topped rows</span>
                                     </span>
                                 </label>
-                                <label class="grid-type-option">
-                                    <input type="radio" name="grid_type_radio" value="isometric">
-                                    <span class="grid-type-card">
-                                        <span class="grid-type-icon">⬨</span>
-                                        <span class="grid-type-title">Isometric</span>
-                                        <span class="grid-type-desc">2:1 isometric diamond grid</span>
-                                    </span>
-                                </label>
                             </div>
                         </div>
 
