@@ -8,7 +8,7 @@ It requires no complex build tools or runtime environments—just standard PHP w
 
 ## 🤖 Built with Antigravity
 
-This project was engineered and coded by **Antigravity** (Google DeepMind's Advanced Agentic Coding assistant) in collaborative pair programming with **PlanetStargazer** ([@PlanetStargazer](https://github.com/PlanetStargazer)).
+This project was engineered and coded by **Antigravity** (Google DeepMind's Advanced Agentic Coding assistant) in collaborative pair programming with **Michael Wolf** ([@PlanetStargazer](https://github.com/PlanetStargazer)).
 
 ---
 
@@ -101,7 +101,7 @@ This project was engineered and coded by **Antigravity** (Google DeepMind's Adva
 ---
 
 ## 📜 Credits & Acknowledgments
-- **Project Lead**: Ezekiel / PlanetStargazer ([@PlanetStargazer](https://github.com/PlanetStargazer))
+- **Project Lead**: Michael Wolf ([@PlanetStargazer](https://github.com/PlanetStargazer))
 - **Coding & Engineering**: Antigravity by Google DeepMind
 - **Default Token Artwork**: Courtesy of [TT-RPG.APP](https://www.tt-rpg.app/en/tokens)
 
