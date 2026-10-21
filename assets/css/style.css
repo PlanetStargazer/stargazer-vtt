@@ -272,10 +272,56 @@ input, textarea, button, select {
     color: #fecaca;
 }
 
+.alert-success {
+    background: rgba(34, 197, 94, 0.15);
+    border: 1px solid rgba(34, 197, 94, 0.45);
+    color: #bbf7d0;
+}
+
 .alert-info {
     background: rgba(59, 130, 246, 0.15);
     border: 1px solid rgba(59, 130, 246, 0.4);
     color: #bfdbfe;
+}
+
+.form-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
+}
+
+.form-label-row label {
+    margin-bottom: 0;
+}
+
+.auth-link-btn {
+    background: none;
+    border: none;
+    color: #60a5fa;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    padding: 0;
+    transition: color 0.15s;
+}
+
+.auth-link-btn:hover {
+    color: #93c5fd;
+}
+
+.auth-helper-text {
+    font-size: 0.88rem;
+    color: #94a3b8;
+    margin-bottom: 18px;
+    line-height: 1.5;
+}
+
+.auth-footer-row {
+    text-align: center;
+    margin-top: 16px;
 }
 
 /* =========================================================

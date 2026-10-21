@@ -186,6 +186,15 @@ class Storage {
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS password_resets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token TEXT UNIQUE NOT NULL,
+                expires_at INTEGER NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            );
         ");
 
         // Ensure new columns exist if upgrading from an earlier schema
@@ -453,6 +462,157 @@ class Storage {
             }
         }
         return null;
+    }
+
+
+    public function getUserByEmail(string $email): ?array {
+        $email = trim($email);
+        if ($email === '') return null;
+        if ($this->pdo) {
+            $stmt = $this->pdo->prepare("SELECT id, username, email, is_admin, is_gm, created_at FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1");
+            $stmt->execute([$email]);
+            $u = $stmt->fetch();
+            if (!$u) return null;
+            $u['id'] = (int)$u['id'];
+            $u['is_admin'] = (int)$u['is_admin'];
+            $u['is_gm'] = (int)$u['is_gm'];
+            return $u;
+        }
+        $data = $this->readJsonData();
+        foreach ($data['users'] as $u) {
+            if (strcasecmp($u['email'], $email) === 0) {
+                unset($u['password_hash']);
+                return $u;
+            }
+        }
+        return null;
+    }
+
+
+    public function getUserByUsernameOrEmail(string $identifier): ?array {
+        $identifier = trim($identifier);
+        if ($identifier === '') return null;
+        if ($this->pdo) {
+            $stmt = $this->pdo->prepare("SELECT id, username, email, is_admin, is_gm, created_at FROM users WHERE LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?) LIMIT 1");
+            $stmt->execute([$identifier, $identifier]);
+            $u = $stmt->fetch();
+            if (!$u) return null;
+            $u['id'] = (int)$u['id'];
+            $u['is_admin'] = (int)$u['is_admin'];
+            $u['is_gm'] = (int)$u['is_gm'];
+            return $u;
+        }
+        $data = $this->readJsonData();
+        foreach ($data['users'] as $u) {
+            if (strcasecmp($u['username'], $identifier) === 0 || strcasecmp($u['email'], $identifier) === 0) {
+                unset($u['password_hash']);
+                return $u;
+            }
+        }
+        return null;
+    }
+
+
+    public function createPasswordResetToken(int $userId): string {
+        $token = bin2hex(random_bytes(32));
+        $now = time();
+        $expiresAt = $now + 3600; // 1 hour validity
+
+        if ($this->pdo) {
+            $del = $this->pdo->prepare("DELETE FROM password_resets WHERE user_id = ?");
+            $del->execute([$userId]);
+
+            $stmt = $this->pdo->prepare("INSERT INTO password_resets (user_id, token, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)");
+            $stmt->execute([$userId, $token, $expiresAt, $now]);
+            return $token;
+        }
+
+        $data = $this->readJsonData();
+        if (!isset($data['password_resets'])) {
+            $data['password_resets'] = [];
+        }
+        $data['password_resets'] = array_values(array_filter(
+            $data['password_resets'],
+            fn($r) => (int)$r['user_id'] !== $userId
+        ));
+        $nextId = empty($data['password_resets']) ? 1 : (max(array_column($data['password_resets'], 'id')) + 1);
+        $data['password_resets'][] = [
+            'id' => $nextId,
+            'user_id' => $userId,
+            'token' => $token,
+            'expires_at' => $expiresAt,
+            'used' => 0,
+            'created_at' => $now,
+        ];
+        $this->writeJsonData($data);
+        return $token;
+    }
+
+
+    public function verifyPasswordResetToken(string $token): ?array {
+        $token = trim($token);
+        if ($token === '') return null;
+        $now = time();
+
+        if ($this->pdo) {
+            $stmt = $this->pdo->prepare("SELECT * FROM password_resets WHERE token = ? AND used = 0 AND expires_at > ? LIMIT 1");
+            $stmt->execute([$token, $now]);
+            $row = $stmt->fetch();
+            if (!$row) return null;
+            $user = $this->getUserById((int)$row['user_id']);
+            if (!$user) return null;
+            return [
+                'reset_id' => (int)$row['id'],
+                'user' => $user
+            ];
+        }
+
+        $data = $this->readJsonData();
+        if (empty($data['password_resets'])) return null;
+        foreach ($data['password_resets'] as $r) {
+            if ($r['token'] === $token && empty($r['used']) && (int)$r['expires_at'] > $now) {
+                $user = $this->getUserById((int)$r['user_id']);
+                if (!$user) return null;
+                return [
+                    'reset_id' => (int)$r['id'],
+                    'user' => $user
+                ];
+            }
+        }
+        return null;
+    }
+
+
+    public function resetPasswordWithToken(string $token, string $newPassword): bool {
+        $verified = $this->verifyPasswordResetToken($token);
+        if (!$verified) return false;
+
+        $userId = (int)$verified['user']['id'];
+        $hash = password_hash($newPassword, PASSWORD_DEFAULT);
+
+        if ($this->pdo) {
+            $stmt = $this->pdo->prepare("UPDATE users SET password_hash = ? WHERE id = ?");
+            $stmt->execute([$hash, $userId]);
+            $mark = $this->pdo->prepare("UPDATE password_resets SET used = 1 WHERE id = ?");
+            $mark->execute([(int)$verified['reset_id']]);
+            return true;
+        }
+
+        $data = $this->readJsonData();
+        foreach ($data['users'] as &$u) {
+            if ((int)$u['id'] === $userId) {
+                $u['password_hash'] = $hash;
+                break;
+            }
+        }
+        foreach ($data['password_resets'] as &$r) {
+            if ((int)$r['id'] === (int)$verified['reset_id']) {
+                $r['used'] = 1;
+                break;
+            }
+        }
+        $this->writeJsonData($data);
+        return true;
     }
 
 

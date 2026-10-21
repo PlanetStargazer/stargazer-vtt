@@ -194,6 +194,18 @@
         }
     }
 
+    function showSuccess(containerId, msg) {
+        const el = $(containerId);
+        if (!el) return;
+        if (!msg) {
+            el.classList.add('hidden');
+            el.textContent = '';
+        } else {
+            el.textContent = msg;
+            el.classList.remove('hidden');
+        }
+    }
+
     // =========================================================
     // INITIALIZATION & AUTHENTICATION
     // =========================================================
@@ -202,13 +214,20 @@
         bindLobbyEvents();
         bindVttEvents();
 
+        const params = new URLSearchParams(window.location.search);
+        const resetToken = params.get('reset_token');
+        if (resetToken) {
+            showView('view-auth');
+            await handleResetPasswordToken(resetToken);
+            return;
+        }
+
         try {
             const status = await apiCall('status');
             if (status.needs_admin_setup) {
                 showView('view-setup-admin');
             } else if (status.user) {
                 state.user = status.user;
-                const params = new URLSearchParams(window.location.search);
                 const urlGameId = Number(params.get('game_id') || 0);
                 const urlView = (params.get('view') || '').toLowerCase();
                 if (urlGameId > 0) {
@@ -225,7 +244,45 @@
         }
     }
 
+    async function handleResetPasswordToken(token) {
+        const tabsBar = $('auth-tabs-bar');
+        if (tabsBar) tabsBar.classList.add('hidden');
+        $('form-login').classList.add('hidden');
+        $('form-signup').classList.add('hidden');
+        $('form-forgot-password').classList.add('hidden');
+        showError('auth-error', null);
+        showSuccess('auth-success', null);
+
+        try {
+            const res = await apiCall('verify_reset_token', { token });
+            $('form-reset-password').classList.remove('hidden');
+            $('reset-token-input').value = token;
+            const greet = $('reset-greeting-text');
+            if (greet) {
+                greet.textContent = `Welcome back, ${res.username || 'Adventurer'}! Please enter a new password for your account.`;
+            }
+            $('reset-new-password').focus();
+        } catch (err) {
+            showError('auth-error', 'This password reset link is invalid or has expired. Please request a new one.');
+            $('form-forgot-password').classList.remove('hidden');
+            if (tabsBar) tabsBar.classList.remove('hidden');
+        }
+    }
+
     function bindAuthEvents() {
+        function switchToLoginView() {
+            const tabsBar = $('auth-tabs-bar');
+            if (tabsBar) tabsBar.classList.remove('hidden');
+            $('tab-login').classList.add('active');
+            $('tab-signup').classList.remove('active');
+            $('form-login').classList.remove('hidden');
+            $('form-signup').classList.add('hidden');
+            $('form-forgot-password').classList.add('hidden');
+            $('form-reset-password').classList.add('hidden');
+            showError('auth-error', null);
+            showSuccess('auth-success', null);
+        }
+
         // First-launch Admin Setup form
         const setupForm = $('form-setup-admin');
         if (setupForm) {
@@ -251,18 +308,132 @@
         const tabSignup = $('tab-signup');
         if (tabLogin && tabSignup) {
             tabLogin.addEventListener('click', () => {
-                tabLogin.classList.add('active');
-                tabSignup.classList.remove('active');
-                $('form-login').classList.remove('hidden');
-                $('form-signup').classList.add('hidden');
-                showError('auth-error', null);
+                switchToLoginView();
             });
             tabSignup.addEventListener('click', () => {
+                const tabsBar = $('auth-tabs-bar');
+                if (tabsBar) tabsBar.classList.remove('hidden');
                 tabSignup.classList.add('active');
                 tabLogin.classList.remove('active');
                 $('form-signup').classList.remove('hidden');
                 $('form-login').classList.add('hidden');
+                $('form-forgot-password').classList.add('hidden');
+                $('form-reset-password').classList.add('hidden');
                 showError('auth-error', null);
+                showSuccess('auth-success', null);
+            });
+        }
+
+        // Switch to Forgot Password
+        const btnShowForgot = $('btn-show-forgot');
+        if (btnShowForgot) {
+            btnShowForgot.addEventListener('click', () => {
+                const tabsBar = $('auth-tabs-bar');
+                if (tabsBar) tabsBar.classList.add('hidden');
+                $('form-login').classList.add('hidden');
+                $('form-signup').classList.add('hidden');
+                $('form-reset-password').classList.add('hidden');
+                $('form-forgot-password').classList.remove('hidden');
+                showError('auth-error', null);
+                showSuccess('auth-success', null);
+                const currentIdentifier = $('login-username').value.trim();
+                if (currentIdentifier) {
+                    $('forgot-identifier').value = currentIdentifier;
+                }
+                $('forgot-identifier').focus();
+            });
+        }
+
+        // Return to Login from Forgot Password
+        const btnBackToLogin = $('btn-back-to-login');
+        if (btnBackToLogin) {
+            btnBackToLogin.addEventListener('click', () => {
+                switchToLoginView();
+            });
+        }
+
+        // Cancel / Return to Login from Reset Password Form
+        const btnCancelReset = $('btn-cancel-reset');
+        if (btnCancelReset) {
+            btnCancelReset.addEventListener('click', () => {
+                history.replaceState({}, document.title, window.location.pathname);
+                switchToLoginView();
+            });
+        }
+
+        // Forgot password form submission
+        const forgotForm = $('form-forgot-password');
+        if (forgotForm) {
+            forgotForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                showError('auth-error', null);
+                showSuccess('auth-success', null);
+                const identifier = $('forgot-identifier').value.trim();
+                const submitBtn = $('btn-submit-forgot');
+                const origText = submitBtn.textContent;
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Sending...';
+
+                try {
+                    const res = await apiCall('forgot_password', { email: identifier });
+                    showSuccess('auth-success', res.message || 'If an account matches that email, a reset link has been sent.');
+                    if (res.dev_reset_url) {
+                        const devNote = document.createElement('div');
+                        devNote.style.marginTop = '10px';
+                        devNote.style.paddingTop = '8px';
+                        devNote.style.borderTop = '1px solid rgba(255,255,255,0.15)';
+                        devNote.style.fontSize = '0.82rem';
+                        devNote.innerHTML = `<strong>Local Dev Quick Link:</strong> <a href="${escapeHtml(res.dev_reset_url)}" style="color:#93c5fd; text-decoration:underline;">Click here to simulate opening email link</a>`;
+                        $('auth-success').appendChild(devNote);
+                    }
+                    $('forgot-identifier').value = '';
+                } catch (err) {
+                    showError('auth-error', err.message);
+                } finally {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = origText;
+                }
+            });
+        }
+
+        // Reset password form submission
+        const resetForm = $('form-reset-password');
+        if (resetForm) {
+            resetForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                showError('auth-error', null);
+                showSuccess('auth-success', null);
+                const token = $('reset-token-input').value;
+                const newPass = $('reset-new-password').value;
+                const confirmPass = $('reset-confirm-password').value;
+
+                if (newPass.length < 6) {
+                    showError('auth-error', 'Password must be at least 6 characters long.');
+                    return;
+                }
+                if (newPass !== confirmPass) {
+                    showError('auth-error', 'Passwords do not match. Please verify and try again.');
+                    return;
+                }
+
+                const submitBtn = $('btn-submit-reset');
+                const origText = submitBtn.textContent;
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Updating...';
+
+                try {
+                    const res = await apiCall('reset_password', { token, password: newPass });
+                    history.replaceState({}, document.title, window.location.pathname);
+                    switchToLoginView();
+                    showSuccess('auth-success', res.message || 'Your password has been successfully reset! You can now log in.');
+                    $('reset-new-password').value = '';
+                    $('reset-confirm-password').value = '';
+                } catch (err) {
+                    showError('auth-error', err.message);
+                } finally {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = origText;
+                }
             });
         }
 
@@ -272,6 +443,7 @@
             loginForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
                 showError('auth-error', null);
+                showSuccess('auth-success', null);
                 const username = $('login-username').value.trim();
                 const password = $('login-password').value;
 
@@ -291,6 +463,7 @@
             signupForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
                 showError('auth-error', null);
+                showSuccess('auth-success', null);
                 const username = $('signup-username').value.trim();
                 const email = $('signup-email').value.trim();
                 const password = $('signup-password').value;

@@ -186,6 +186,109 @@ try {
             respond(['ok' => true]);
         }
 
+        case 'forgot_password': {
+            $identifier = trim((string)($input['email'] ?? $input['username'] ?? ''));
+            if ($identifier === '') {
+                respond(['ok' => false, 'error' => 'Please enter your username or email address.'], 400);
+            }
+
+            $user = $storage->getUserByUsernameOrEmail($identifier);
+            $debugUrl = null;
+
+            if ($user && !empty($user['email'])) {
+                $token = $storage->createPasswordResetToken((int)$user['id']);
+
+                // Build absolute reset link based on current request
+                $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+                    || (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443)
+                    || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+                $protocol = $isHttps ? 'https' : 'http';
+                $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+                $reqUri = $_SERVER['REQUEST_URI'] ?? '/api.php';
+                $path = parse_url($reqUri, PHP_URL_PATH) ?: '/';
+                $dir = rtrim(str_replace('\\', '/', dirname($path)), '/');
+                if ($dir === '/' || $dir === '.') $dir = '';
+                $resetUrl = "{$protocol}://{$host}{$dir}/index.php?reset_token=" . urlencode($token);
+
+                $subject = "Password Reset Request - Stargazer's World VTT";
+                $body = "Greetings " . $user['username'] . ",\r\n\r\n"
+                    . "A request was received to reset the password for your account on Stargazer's World VTT.\r\n\r\n"
+                    . "To set a new password, please click the link below (or copy and paste it into your browser):\r\n\r\n"
+                    . $resetUrl . "\r\n\r\n"
+                    . "This link is valid for 1 hour.\r\n"
+                    . "If you did not request this password reset, you can safely ignore this email.\r\n\r\n"
+                    . "May the dice roll ever in your favor,\r\n"
+                    . "— Stargazer's World VTT\r\n";
+
+                $cleanHost = preg_replace('/:\d+$/', '', $host);
+                if ($cleanHost === 'localhost' || filter_var($cleanHost, FILTER_VALIDATE_IP)) {
+                    $cleanHost = 'stargazer-vtt.local';
+                }
+                $fromEmail = "noreply@" . $cleanHost;
+                $headers = "From: Stargazer's World VTT <{$fromEmail}>\r\n"
+                    . "Reply-To: {$fromEmail}\r\n"
+                    . "X-Mailer: PHP/" . phpversion() . "\r\n"
+                    . "Content-Type: text/plain; charset=UTF-8\r\n";
+
+                $sent = @mail($user['email'], $subject, $body, $headers);
+
+                // Debug log to data/mail_debug.log (helpful when testing locally or on servers without configured MTA)
+                $logLine = "[" . date('Y-m-d H:i:s') . "] PASSWORD RESET for {$user['email']} ({$user['username']})\n"
+                    . "Reset Link: {$resetUrl}\n"
+                    . "PHP mail() status: " . ($sent ? "SENT" : "NOT_SENT (no local MTA)") . "\n\n";
+                @file_put_contents(__DIR__ . '/data/mail_debug.log', $logLine, FILE_APPEND);
+
+                // If running on local server / dev without mail working, surface debug link so testing works out of the box
+                if (!$sent && ($host === 'localhost' || str_starts_with($host, 'localhost:') || str_starts_with($host, '127.0.0.1'))) {
+                    $debugUrl = $resetUrl;
+                }
+            }
+
+            // Always respond uniformly to avoid user enumeration
+            $resp = [
+                'ok' => true,
+                'message' => 'If an account matches that email or username, a reset link has been sent. Please check your inbox (and spam folder).'
+            ];
+            if ($debugUrl) {
+                $resp['dev_reset_url'] = $debugUrl;
+            }
+            respond($resp);
+        }
+
+        case 'verify_reset_token': {
+            $token = trim((string)($input['token'] ?? $_GET['token'] ?? ''));
+            if ($token === '') {
+                respond(['ok' => false, 'error' => 'No reset token provided.'], 400);
+            }
+            $verified = $storage->verifyPasswordResetToken($token);
+            if (!$verified) {
+                respond(['ok' => false, 'error' => 'This password reset link is invalid or has expired.'], 400);
+            }
+            respond([
+                'ok' => true,
+                'username' => $verified['user']['username'] ?? 'Adventurer',
+            ]);
+        }
+
+        case 'reset_password': {
+            $token = trim((string)($input['token'] ?? ''));
+            $newPassword = (string)($input['password'] ?? '');
+
+            if ($token === '') {
+                respond(['ok' => false, 'error' => 'Missing reset token.'], 400);
+            }
+            if (strlen($newPassword) < 6) {
+                respond(['ok' => false, 'error' => 'New password must be at least 6 characters long.'], 400);
+            }
+
+            $success = $storage->resetPasswordWithToken($token, $newPassword);
+            if (!$success) {
+                respond(['ok' => false, 'error' => 'Password reset failed. The link may have expired or already been used.'], 400);
+            }
+
+            respond(['ok' => true, 'message' => 'Password has been successfully updated! You can now log in.']);
+        }
+
         case 'lobby_data': {
             $user = getCurrentUser($storage);
             if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);

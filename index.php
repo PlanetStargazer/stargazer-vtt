@@ -57,12 +57,13 @@ session_start();
                 <p>Sign in to launch or join campaigns, or register a new account.</p>
             </div>
 
-            <div class="auth-tabs">
+            <div class="auth-tabs" id="auth-tabs-bar">
                 <button type="button" id="tab-login" class="auth-tab active">Log In</button>
                 <button type="button" id="tab-signup" class="auth-tab">Sign Up</button>
             </div>
 
             <div id="auth-error" class="alert alert-error hidden"></div>
+            <div id="auth-success" class="alert alert-success hidden"></div>
 
             <!-- Login Form -->
             <form id="form-login">
@@ -71,7 +72,10 @@ session_start();
                     <input type="text" id="login-username" class="form-control" placeholder="Enter your username or email" required>
                 </div>
                 <div class="form-group">
-                    <label for="login-password">Password</label>
+                    <div class="form-label-row">
+                        <label for="login-password">Password</label>
+                        <button type="button" id="btn-show-forgot" class="auth-link-btn" tabindex="-1">Forgot password?</button>
+                    </div>
                     <input type="password" id="login-password" class="form-control" placeholder="Enter your password" required>
                 </div>
                 <button type="submit" class="btn btn-primary btn-block">Enter Stargazer's World VTT</button>
@@ -92,6 +96,37 @@ session_start();
                     <input type="password" id="signup-password" class="form-control" placeholder="At least 6 characters" required minlength="6">
                 </div>
                 <button type="submit" class="btn btn-primary btn-block">Create Account</button>
+            </form>
+
+            <!-- Forgot Password Form -->
+            <form id="form-forgot-password" class="hidden">
+                <p class="auth-helper-text">Enter your username or registered email and we'll send you a secure link to reset your password.</p>
+                <div class="form-group">
+                    <label for="forgot-identifier">Username or Email Address</label>
+                    <input type="text" id="forgot-identifier" class="form-control" placeholder="Enter your username or email" required>
+                </div>
+                <button type="submit" id="btn-submit-forgot" class="btn btn-primary btn-block">Send Reset Link</button>
+                <div class="auth-footer-row">
+                    <button type="button" id="btn-back-to-login" class="auth-link-btn">← Back to Log In</button>
+                </div>
+            </form>
+
+            <!-- Set New Password Form (via email link) -->
+            <form id="form-reset-password" class="hidden">
+                <p class="auth-helper-text" id="reset-greeting-text">Please enter a new password for your account.</p>
+                <input type="hidden" id="reset-token-input" value="">
+                <div class="form-group">
+                    <label for="reset-new-password">New Password</label>
+                    <input type="password" id="reset-new-password" class="form-control" placeholder="At least 6 characters" required minlength="6">
+                </div>
+                <div class="form-group">
+                    <label for="reset-confirm-password">Confirm New Password</label>
+                    <input type="password" id="reset-confirm-password" class="form-control" placeholder="Repeat new password" required minlength="6">
+                </div>
+                <button type="submit" id="btn-submit-reset" class="btn btn-primary btn-block">Save New Password</button>
+                <div class="auth-footer-row">
+                    <button type="button" id="btn-cancel-reset" class="auth-link-btn">← Return to Log In</button>
+                </div>
             </form>
         </div>
     </section>
