@@ -22,6 +22,25 @@
         tokenCategoryFolded: { custom: false, builtin: false },
         notes: [],
         activeNoteId: 0,
+        playlists: [],
+        selectedPlaylistId: 0,
+        musicState: null,
+        pdfs: [],
+        pdfLibrarySearch: '',
+        activeViewerPdf: null,
+        lastSeenSharedPdfTime: 0,
+        localMusicVolume: Number(localStorage.getItem('stargazer_vtt_music_volume') ?? 70),
+        localMusicMuted: localStorage.getItem('stargazer_vtt_music_muted') === '1',
+        playerMusicDisabled: localStorage.getItem('stargazer_vtt_player_music_disabled') === '1',
+        audioElement: null,
+        ytPlayer: null,
+        ytReady: false,
+        ytPendingVideoId: null,
+        ytPendingStartSeconds: 0,
+        autoplayBlocked: false,
+        userHasInteracted: false,
+        ytInitAttempted: false,
+        lastSyncedTrackId: null,
         gridBgRemoveFlag: false,
         participants: [],
         lastMessageId: 0,
@@ -874,6 +893,31 @@
             state.diceEngine.resize();
         }
 
+        state.playlists = [];
+        state.selectedPlaylistId = 0;
+        state.musicState = null;
+        state.lastSyncedTrackId = null;
+        state.pdfs = [];
+        state.pdfLibrarySearch = '';
+        state.activeViewerPdf = null;
+        state.lastSeenSharedPdfTime = Date.now() / 1000;
+        $('modal-music-library').classList.add('hidden');
+        $('modal-pdf-library').classList.add('hidden');
+        $('modal-pdf-viewer').classList.add('hidden');
+        if (state.forcePlayerView) {
+            state.localMusicVolume = Number(localStorage.getItem('stargazer_vtt_player_preview_volume') ?? 70);
+            state.localMusicMuted = localStorage.getItem('stargazer_vtt_player_preview_muted') === '1';
+            state.playerMusicDisabled = localStorage.getItem('stargazer_vtt_player_preview_music_disabled') === '1';
+        } else {
+            state.localMusicVolume = Number(localStorage.getItem('stargazer_vtt_music_volume') ?? 70);
+            state.localMusicMuted = localStorage.getItem('stargazer_vtt_music_muted') === '1';
+            state.playerMusicDisabled = localStorage.getItem('stargazer_vtt_player_music_disabled') === '1';
+        }
+        initAudioElement();
+        initYouTubePlayer();
+        applyLocalVolume();
+        updateMusicBarControlsUI();
+
         await fetchGameState(gameId);
         state.initialHistoryLoaded = true;
 
@@ -890,6 +934,9 @@
             clearInterval(state.pollTimer);
             state.pollTimer = null;
         }
+        stopAllPlayback();
+        state.musicState = null;
+        state.lastSyncedTrackId = null;
     }
 
     async function fetchGameState(gameId) {
@@ -910,7 +957,11 @@
             state.libraryImages = data.library_images || [];
             state.libraryTokens = data.library_tokens || [];
             state.participants = data.participants || [];
+            state.playlists = data.playlists || [];
+            state.musicState = data.music_state || null;
+            state.pdfs = data.pdfs || [];
 
+            syncMusicPlayback();
             updateVttHeaderAndHud();
             renderMapTabsAndGrid();
 
@@ -930,6 +981,15 @@
                 renderTokenLibraryModal();
             }
 
+            if (!$('modal-music-library').classList.contains('hidden')) {
+                renderPlaylistsSidebar();
+                renderPlaylistDetail();
+            }
+
+            if (!$('modal-pdf-library').classList.contains('hidden')) {
+                renderPdfLibraryModal();
+            }
+
             if (Array.isArray(data.messages) && data.messages.length > 0) {
                 appendChatMessages(data.messages);
             }
@@ -946,6 +1006,11 @@
         $('vtt-game-title').textContent = g.name;
         $('vtt-role-badge').textContent = state.isGameGm ? 'GM View' : (state.forcePlayerView ? 'Player View (Preview Tab)' : 'Player View');
         $('vtt-role-badge').className = 'badge ' + (state.isGameGm ? 'badge-gm' : 'badge-player');
+
+        const pdfNavBadge = $('pdf-nav-count-badge');
+        if (pdfNavBadge) {
+            pdfNavBadge.textContent = String(state.pdfs ? state.pdfs.length : 0);
+        }
 
         const gmToolbar = $('vtt-gm-hud');
         const hideUiBtn = $('btn-hide-ui');
@@ -964,13 +1029,25 @@
             if (tokenCountBadge) {
                 tokenCountBadge.textContent = String(state.libraryTokens.length);
             }
+            const playlistCountBadge = $('playlist-count-badge');
+            if (playlistCountBadge) {
+                playlistCountBadge.textContent = String(state.playlists.length);
+            }
+            const pdfCountBadge = $('pdf-count-badge');
+            if (pdfCountBadge) {
+                pdfCountBadge.textContent = String(state.pdfs ? state.pdfs.length : 0);
+            }
             const openRollsBtn = $('btn-toggle-openrolls');
-            if (g.open_rolls) {
-                openRollsBtn.textContent = '🎲 GM Rolls: OPEN';
-                openRollsBtn.className = 'btn btn-primary btn-sm';
-            } else {
-                openRollsBtn.textContent = '🔒 GM Rolls: HIDDEN';
-                openRollsBtn.className = 'btn btn-secondary btn-sm';
+            if (openRollsBtn) {
+                if (g.open_rolls) {
+                    openRollsBtn.innerHTML = '<span class="hud-icon">🎲</span>';
+                    openRollsBtn.className = 'btn btn-secondary hud-icon-btn is-active';
+                    openRollsBtn.title = 'GM Rolls: OPEN (Click to toggle)';
+                } else {
+                    openRollsBtn.innerHTML = '<span class="hud-icon">🔒</span>';
+                    openRollsBtn.className = 'btn btn-secondary hud-icon-btn';
+                    openRollsBtn.title = 'GM Rolls: HIDDEN (Click to toggle)';
+                }
             }
         } else {
             gmToolbar.classList.add('hidden');
@@ -1421,7 +1498,7 @@
         return state.mapTabs.find(t => t.id === Number(state.activeMapId)) || state.mapTabs[0] || null;
     }
 
-    function getGridCellCenter(col, row, tab) {
+    function getGridCellCenter(col, row, tab, tileSize = 1) {
         const c = Number(col) || 0;
         const r = Number(row) || 0;
         const currentTab = tab || getActiveTabForGrid() || {};
@@ -1445,14 +1522,17 @@
             const cx = offsetX + R + c * (3 * R) + ((r % 2 !== 0) ? (1.5 * R) : 0);
             return { cx, cy, size: cellPx };
         } else {
-            // Default square grid
-            const cx = offsetX + (c + 0.5) * cellPx;
-            const cy = offsetY + (r + 0.5) * cellPx;
+            // Default square grid:
+            // Even sizes (2x, 4x) center on the grid line intersection (center of four tiles).
+            // Odd sizes (1x, 3x, 5x) center on the single middle tile center.
+            const isEven = (Number(tileSize) % 2 === 0);
+            const cx = isEven ? (offsetX + c * cellPx) : (offsetX + (c + 0.5) * cellPx);
+            const cy = isEven ? (offsetY + r * cellPx) : (offsetY + (r + 0.5) * cellPx);
             return { cx, cy, size: cellPx };
         }
     }
 
-    function snapPointToGrid(px, py, tab) {
+    function snapPointToGrid(px, py, tab, tileSize = 1) {
         const currentTab = tab || getActiveTabForGrid() || {};
         const gridType = ['square', 'hex_v', 'hex_h'].includes(currentTab.grid_type) ? currentTab.grid_type : 'square';
         const cellPx = Math.max(15, Math.min(400, Number(currentTab.grid_cell_px) || state.baseCellPx || 50));
@@ -1479,7 +1559,7 @@
                 for (let dr = -2; dr <= 2; dr++) {
                     const r = approxRow + dr;
                     if (r < 0) continue;
-                    const { cx, cy } = getGridCellCenter(c, r, currentTab);
+                    const { cx, cy } = getGridCellCenter(c, r, currentTab, tileSize);
                     const dsq = (px - cx) ** 2 + (py - cy) ** 2;
                     if (dsq < minDistSq) {
                         minDistSq = dsq;
@@ -1506,7 +1586,7 @@
                 for (let dc = -2; dc <= 2; dc++) {
                     const c = approxCol + dc;
                     if (c < 0) continue;
-                    const { cx, cy } = getGridCellCenter(c, r, currentTab);
+                    const { cx, cy } = getGridCellCenter(c, r, currentTab, tileSize);
                     const dsq = (px - cx) ** 2 + (py - cy) ** 2;
                     if (dsq < minDistSq) {
                         minDistSq = dsq;
@@ -1517,10 +1597,19 @@
             }
             return { gridX: bestCol, gridY: bestRow };
         } else {
-            // Square grid
-            const gridX = Math.max(0, Math.floor(x / cellPx));
-            const gridY = Math.max(0, Math.floor(y / cellPx));
-            return { gridX, gridY };
+            // Square grid:
+            // Even sizes (2x, 4x) snap center to the nearest grid line intersection (center of four tiles).
+            // Odd sizes (1x, 3x, 5x) snap center to the tile center.
+            const isEven = (Number(tileSize) % 2 === 0);
+            if (isEven) {
+                const gridX = Math.max(1, Math.round(x / cellPx));
+                const gridY = Math.max(1, Math.round(y / cellPx));
+                return { gridX, gridY };
+            } else {
+                const gridX = Math.max(0, Math.floor(x / cellPx));
+                const gridY = Math.max(0, Math.floor(y / cellPx));
+                return { gridX, gridY };
+            }
         }
     }
 
@@ -1826,6 +1915,9 @@
         const el = document.createElement('div');
         el.className = 'board-token-item';
         el.dataset.tokenId = tok.id;
+        if (state.isGameGm) {
+            el.title = tok.title;
+        }
 
         const imgTag = document.createElement('img');
         imgTag.src = tok.filename;
@@ -1833,11 +1925,6 @@
         el.appendChild(imgTag);
 
         if (state.isGameGm) {
-            // Filename / title tag shown ONLY to GM
-            const titleTag = document.createElement('div');
-            titleTag.className = 'token-title-tag';
-            el.appendChild(titleTag);
-
             // Right-click on token as GM opens context menu to configure size, movement permission, or remove/delete
             el.addEventListener('contextmenu', (e) => {
                 if (!state.isGameGm) return;
@@ -1950,8 +2037,8 @@
 
     function updateBoardTokenElement(el, tok) {
         const activeTab = getActiveTabForGrid();
-        const cellPos = getGridCellCenter(tok.grid_x, tok.grid_y, activeTab);
         const tileSize = Math.max(1, Math.min(12, Number(tok.tile_size) || 1));
+        const cellPos = getGridCellCenter(tok.grid_x, tok.grid_y, activeTab, tileSize);
         const tokenDiameter = tileSize * cellPos.size;
 
         el.style.left = `${cellPos.cx - tokenDiameter / 2}px`;
@@ -1963,14 +2050,13 @@
 
         const movable = canUserMoveToken(tok);
         el.classList.toggle('token-draggable', movable);
+        if (state.isGameGm) {
+            el.title = tok.title;
+        }
 
         const titleTag = el.querySelector('.token-title-tag');
         if (titleTag) {
-            if (state.isGameGm) {
-                titleTag.textContent = tok.title;
-            } else {
-                titleTag.remove();
-            }
+            titleTag.remove();
         }
     }
 
@@ -1995,7 +2081,7 @@
             const tileSize = Math.max(1, Math.min(12, Number(currentTok.tile_size) || 1));
             const zoom = state.zoomLevel || 1;
 
-            const startPos = getGridCellCenter(origGridX, origGridY, activeTab);
+            const startPos = getGridCellCenter(origGridX, origGridY, activeTab, tileSize);
             const tokenDiameter = tileSize * startPos.size;
             const origCenterX = startPos.cx;
             const origCenterY = startPos.cy;
@@ -2004,7 +2090,7 @@
             let snappedGridY = origGridY;
 
             const updateTokenMovementRuler = (targetGridX, targetGridY) => {
-                const targetPos = getGridCellCenter(targetGridX, targetGridY, activeTab);
+                const targetPos = getGridCellCenter(targetGridX, targetGridY, activeTab, tileSize);
                 renderRuler(origCenterX, origCenterY, targetPos.cx, targetPos.cy);
             };
 
@@ -2020,11 +2106,11 @@
                 const curCenterX = origCenterX + dx;
                 const curCenterY = origCenterY + dy;
 
-                const snapped = snapPointToGrid(curCenterX, curCenterY, activeTab);
+                const snapped = snapPointToGrid(curCenterX, curCenterY, activeTab, tileSize);
                 snappedGridX = snapped.gridX;
                 snappedGridY = snapped.gridY;
 
-                const newPos = getGridCellCenter(snappedGridX, snappedGridY, activeTab);
+                const newPos = getGridCellCenter(snappedGridX, snappedGridY, activeTab, tileSize);
                 el.style.left = `${newPos.cx - tokenDiameter / 2}px`;
                 el.style.top = `${newPos.cy - tokenDiameter / 2}px`;
                 updateTokenMovementRuler(snappedGridX, snappedGridY);
@@ -2086,8 +2172,12 @@
                     const dy = (moveEvent.clientY - startMouseY) / zoom;
                     const deltaPx = Math.abs(dx) >= Math.abs(dy) ? dx : dy;
                     snappedTileSize = Math.max(1, Math.min(12, Math.round((origTileSize * cellPx + deltaPx) / cellPx)));
-                    el.style.width = `${snappedTileSize * cellPx}px`;
-                    el.style.height = `${snappedTileSize * cellPx}px`;
+                    const cellPos = getGridCellCenter(currentTok.grid_x, currentTok.grid_y, activeTab, snappedTileSize);
+                    const diameter = snappedTileSize * cellPos.size;
+                    el.style.width = `${diameter}px`;
+                    el.style.height = `${diameter}px`;
+                    el.style.left = `${cellPos.cx - diameter / 2}px`;
+                    el.style.top = `${cellPos.cy - diameter / 2}px`;
                     const sizeBtn = el.querySelector('.js-token-size-btn');
                     if (sizeBtn) {
                         sizeBtn.textContent = `${snappedTileSize}x`;
@@ -2101,6 +2191,7 @@
 
                     if (currentTok) {
                         currentTok.tile_size = snappedTileSize;
+                        updateBoardTokenElement(el, currentTok);
                     }
 
                     try {
@@ -2932,7 +3023,9 @@
                     const area = $('tabletop-scroll-area');
                     const rawX = (area ? area.scrollLeft : 0) + 120 + Math.random() * 80;
                     const rawY = (area ? area.scrollTop : 0) + 90 + Math.random() * 80;
-                    const snapped = snapPointToGrid(rawX, rawY, activeTab);
+                    const tok = (state.libraryTokens || []).find(t => t.id === tokenId) || (state.boardTokens || []).find(t => t.id === tokenId);
+                    const tileSize = tok ? (Number(tok.tile_size) || 1) : 1;
+                    const snapped = snapPointToGrid(rawX, rawY, activeTab, tileSize);
                     const spawnGridX = snapped.gridX;
                     const spawnGridY = snapped.gridY;
                     try {
@@ -3070,8 +3163,8 @@
                     const tok = state.libraryTokens.find(t => t.id === assetId);
                     const cellPx = state.baseCellPx || 50;
                     const tileSize = tok ? Math.max(1, Number(tok.tile_size) || 1) : 1;
-                    const snapped = snapPointToGrid(planeX, planeY, activeTab);
-                    const cellPos = getGridCellCenter(snapped.gridX, snapped.gridY, activeTab);
+                    const snapped = snapPointToGrid(planeX, planeY, activeTab, tileSize);
+                    const cellPos = getGridCellCenter(snapped.gridX, snapped.gridY, activeTab, tileSize);
                     const tokenDiameter = tileSize * cellPx;
                     preview.style.left = `${cellPos.cx - tokenDiameter / 2}px`;
                     preview.style.top = `${cellPos.cy - tokenDiameter / 2}px`;
@@ -3103,7 +3196,9 @@
                     if (type === 'token') {
                         hide($('modal-token-library'));
                         const activeTab = getActiveTabForGrid();
-                        const snapped = snapPointToGrid(planeX, planeY, activeTab);
+                        const tok = state.libraryTokens.find(t => t.id === assetId);
+                        const tileSize = tok ? Math.max(1, Number(tok.tile_size) || 1) : 1;
+                        const snapped = snapPointToGrid(planeX, planeY, activeTab, tileSize);
                         const gridX = snapped.gridX;
                         const gridY = snapped.gridY;
                         try {
@@ -3160,7 +3255,9 @@
                     const area = $('tabletop-scroll-area');
                     const rawX = (area ? area.scrollLeft : 0) + 120 + Math.random() * 80;
                     const rawY = (area ? area.scrollTop : 0) + 90 + Math.random() * 80;
-                    const snapped = snapPointToGrid(rawX, rawY, activeTab);
+                    const tok = (state.libraryTokens || []).find(t => t.id === tokenId) || (state.boardTokens || []).find(t => t.id === tokenId);
+                    const tileSize = tok ? (Number(tok.tile_size) || 1) : 1;
+                    const snapped = snapPointToGrid(rawX, rawY, activeTab, tileSize);
                     const spawnGridX = snapped.gridX;
                     const spawnGridY = snapped.gridY;
                     try {
@@ -3430,9 +3527,14 @@
                 }
             }
 
-            // Reset file picker
+            // Reset file picker & library selection
+            state.gridBgRemoveFlag = false;
             const bgInput = $('grid-bg-file-input');
             if (bgInput) bgInput.value = '';
+            const libSelected = $('grid-bg-library-selected');
+            if (libSelected) libSelected.value = '';
+            const libPicker = $('grid-bg-library-picker');
+            if (libPicker) libPicker.classList.add('hidden');
             $('grid-bg-chosen-name').textContent = 'No new file chosen';
 
             $('modal-map-tab').classList.remove('hidden');
@@ -3468,11 +3570,130 @@
             }
         });
 
+        // Image Library Picker for battlemap background
+        function renderMapBgLibraryPicker() {
+            const container = $('grid-bg-library-items');
+            if (!container) return;
+            container.innerHTML = '';
+
+            const images = state.libraryImages || [];
+            if (images.length === 0) {
+                container.innerHTML = `<div style="grid-column: 1 / -1; padding: 12px; font-size: 0.8rem; color: var(--text-muted); text-align: center;">
+                    Your Image Library is empty. Upload images via the 🗂️ Image Library button on the tabletop toolbar first!
+                </div>`;
+                return;
+            }
+
+            images.forEach(img => {
+                const card = document.createElement('div');
+                card.className = 'grid-bg-library-card';
+                card.title = `${img.title || 'Untitled'} (${img.width || 0}×${img.height || 0}px)`;
+                card.innerHTML = `
+                    <img src="${escapeHtml(img.filename)}" alt="${escapeHtml(img.title || '')}" loading="lazy">
+                    <div class="grid-bg-library-card-title">${escapeHtml(img.title || 'Untitled')}</div>
+                    <div class="grid-bg-library-card-dim">${img.width || 0}×${img.height || 0}</div>
+                `;
+                card.addEventListener('click', () => {
+                    state.gridBgRemoveFlag = false;
+                    const bgInput = $('grid-bg-file-input');
+                    if (bgInput) bgInput.value = '';
+                    if ($('grid-bg-library-selected')) {
+                        $('grid-bg-library-selected').value = img.filename;
+                    }
+                    $('grid-bg-current-container').classList.remove('hidden');
+                    $('grid-bg-thumb').src = img.filename;
+                    const displayName = img.title || img.filename.split('/').pop();
+                    $('grid-bg-name').textContent = displayName;
+                    $('grid-bg-dim').textContent = `${img.width || 0} × ${img.height || 0} px (From Image Library)`;
+                    $('grid-bg-chosen-name').textContent = `Selected from Library: ${displayName}`;
+                    $('grid-bg-library-picker').classList.add('hidden');
+                });
+                container.appendChild(card);
+            });
+        }
+
+        const pickLibBtn = $('btn-pick-library-bg');
+        if (pickLibBtn) {
+            pickLibBtn.addEventListener('click', () => {
+                const picker = $('grid-bg-library-picker');
+                if (picker) {
+                    if (picker.classList.contains('hidden')) {
+                        renderMapBgLibraryPicker();
+                        picker.classList.remove('hidden');
+                    } else {
+                        picker.classList.add('hidden');
+                    }
+                }
+            });
+        }
+
+        const closeLibPickerBtn = $('btn-close-bg-library-picker');
+        if (closeLibPickerBtn) {
+            closeLibPickerBtn.addEventListener('click', () => {
+                $('grid-bg-library-picker').classList.add('hidden');
+            });
+        }
+
+        // Drag and drop battlemap background file
+        const dropzone = $('grid-bg-dropzone');
+        if (dropzone) {
+            ['dragenter', 'dragover'].forEach(name => {
+                dropzone.addEventListener(name, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dropzone.classList.add('is-dragover');
+                });
+            });
+            ['dragleave', 'drop'].forEach(name => {
+                dropzone.addEventListener(name, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dropzone.classList.remove('is-dragover');
+                });
+            });
+            dropzone.addEventListener('drop', (e) => {
+                const dt = e.dataTransfer;
+                if (!dt || !dt.files || dt.files.length === 0) return;
+                const file = dt.files[0];
+                if (!file.type.startsWith('image/')) {
+                    showAlertModal('Please drop a valid image file (PNG, JPG, GIF, WebP, SVG).', 'Invalid File', '⚠️');
+                    return;
+                }
+                const bgInput = $('grid-bg-file-input');
+                if (bgInput) {
+                    bgInput.files = dt.files;
+                }
+                state.gridBgRemoveFlag = false;
+                if ($('grid-bg-library-selected')) $('grid-bg-library-selected').value = '';
+                $('grid-bg-chosen-name').textContent = `${file.name} (${Math.round(file.size / 1024)} KB)`;
+
+                const reader = new FileReader();
+                reader.onload = (re) => {
+                    $('grid-bg-current-container').classList.remove('hidden');
+                    $('grid-bg-thumb').src = re.target.result;
+                    $('grid-bg-name').textContent = file.name;
+                    $('grid-bg-dim').textContent = 'New image (to be uploaded on save)';
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
         $('grid-bg-file-input').addEventListener('change', () => {
             const bgInput = $('grid-bg-file-input');
             if (bgInput && bgInput.files && bgInput.files[0]) {
+                const file = bgInput.files[0];
                 state.gridBgRemoveFlag = false;
-                $('grid-bg-chosen-name').textContent = bgInput.files[0].name;
+                if ($('grid-bg-library-selected')) $('grid-bg-library-selected').value = '';
+                $('grid-bg-chosen-name').textContent = file.name;
+
+                const reader = new FileReader();
+                reader.onload = (re) => {
+                    $('grid-bg-current-container').classList.remove('hidden');
+                    $('grid-bg-thumb').src = re.target.result;
+                    $('grid-bg-name').textContent = file.name;
+                    $('grid-bg-dim').textContent = 'New image (to be uploaded on save)';
+                };
+                reader.readAsDataURL(file);
             } else {
                 $('grid-bg-chosen-name').textContent = 'No new file chosen';
             }
@@ -3480,6 +3701,9 @@
 
         $('btn-remove-grid-bg').addEventListener('click', () => {
             state.gridBgRemoveFlag = true;
+            if ($('grid-bg-library-selected')) $('grid-bg-library-selected').value = '';
+            const bgInput = $('grid-bg-file-input');
+            if (bgInput) bgInput.value = '';
             $('grid-bg-current-container').classList.add('hidden');
             $('grid-bg-chosen-name').textContent = 'Background will be removed upon saving';
         });
@@ -3511,8 +3735,11 @@
                 formData.append('remove_background', '1');
             } else {
                 const bgInput = $('grid-bg-file-input');
+                const librarySelected = $('grid-bg-library-selected') ? $('grid-bg-library-selected').value : '';
                 if (bgInput && bgInput.files && bgInput.files[0]) {
                     formData.append('background_file', bgInput.files[0]);
+                } else if (librarySelected) {
+                    formData.append('background_image', librarySelected);
                 }
             }
 
@@ -3719,6 +3946,1476 @@
                 showAlertModal('Failed to delete note: ' + err.message, 'Delete Error', '⚠️');
             }
         });
+
+        bindMusicEvents();
+        bindPdfEvents();
+    }
+
+    // =========================================================
+    // SYNCHRONIZED MUSIC & PLAYLISTS CONTROLLER
+    // =========================================================
+
+    function initAudioElement() {
+        if (!state.audioElement) {
+            state.audioElement = $('vtt-audio-player');
+            if (state.audioElement) {
+                state.audioElement.addEventListener('ended', () => {
+                    if (state.isGameGm) {
+                        handleTrackEnded();
+                    }
+                });
+            }
+        }
+    }
+
+    let ytApiReadyCallbacks = [];
+    let ytApiInitialized = false;
+
+    function ensureYouTubeApiReady(callback) {
+        if (window.YT && window.YT.Player) {
+            if (callback) callback();
+            return;
+        }
+
+        if (callback) ytApiReadyCallbacks.push(callback);
+
+        if (ytApiInitialized) return;
+        ytApiInitialized = true;
+
+        const prevHandler = window.onYouTubeIframeAPIReady;
+        window.onYouTubeIframeAPIReady = function () {
+            if (prevHandler) prevHandler();
+            const cbs = ytApiReadyCallbacks.slice();
+            ytApiReadyCallbacks = [];
+            cbs.forEach(cb => { try { cb(); } catch (e) {} });
+        };
+
+        if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
+            const tag = document.createElement('script');
+            tag.src = 'https://www.youtube.com/iframe_api';
+            document.head.appendChild(tag);
+        }
+
+        let pollCount = 0;
+        const poll = setInterval(() => {
+            pollCount++;
+            if (window.YT && window.YT.Player) {
+                clearInterval(poll);
+                const cbs = ytApiReadyCallbacks.slice();
+                ytApiReadyCallbacks = [];
+                cbs.forEach(cb => { try { cb(); } catch (e) {} });
+            } else if (pollCount > 50) {
+                clearInterval(poll);
+            }
+        }, 120);
+    }
+
+    function initYouTubePlayer() {
+        if (state.ytPlayer || state.ytInitAttempted) return;
+        state.ytInitAttempted = true;
+        ensureYouTubeApiReady(() => {
+            if (state.ytPlayer) return;
+            const playerEl = $('vtt-youtube-player');
+            if (!playerEl) return;
+            try {
+                state.ytPlayer = new window.YT.Player('vtt-youtube-player', {
+                    events: {
+                        onReady: (event) => {
+                            state.ytReady = true;
+                            try {
+                                const iframe = event.target.getIframe();
+                                if (iframe) {
+                                    iframe.setAttribute('allow', 'autoplay; encrypted-media');
+                                }
+                            } catch (e) {}
+                            applyLocalVolume();
+                            if (state.ytPendingVideoId) {
+                                playYouTubeVideo(state.ytPendingVideoId, state.ytPendingStartSeconds);
+                                state.ytPendingVideoId = null;
+                            }
+                        },
+                        onStateChange: (event) => {
+                            if (event.data === 1) { // YT.PlayerState.PLAYING
+                                if (state.userHasInteracted || state.isGameGm) {
+                                    applyLocalVolume();
+                                }
+                            } else if (event.data === 0) { // YT.PlayerState.ENDED
+                                if (state.isGameGm) {
+                                    handleTrackEnded();
+                                }
+                            }
+                        },
+                        onError: (err) => {
+                            console.warn('YouTube playback error:', err);
+                        }
+                    }
+                });
+            } catch (e) {
+                console.warn('Could not initialize YouTube player:', e);
+            }
+        });
+    }
+
+    window.onYouTubeIframeAPIReady = function () {
+        initYouTubePlayer();
+    };
+
+    function parseYoutubeId(url) {
+        if (!url) return null;
+        const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+        const match = String(url).match(regExp);
+        return (match && match[1]) ? match[1] : null;
+    }
+
+    function applyLocalVolume() {
+        const isMuted = state.localMusicMuted || (state.playerMusicDisabled && !state.isGameGm);
+        const volumeVal = (typeof state.localMusicVolume === 'number' && !isNaN(state.localMusicVolume) && state.localMusicVolume >= 0)
+            ? state.localMusicVolume
+            : 70;
+        const effectiveVol = isMuted ? 0 : (volumeVal / 100);
+
+        if (state.audioElement) {
+            state.audioElement.volume = Math.max(0, Math.min(1, effectiveVol));
+            state.audioElement.muted = isMuted;
+        }
+
+        if (state.ytPlayer) {
+            try {
+                if (isMuted) {
+                    if (typeof state.ytPlayer.mute === 'function') state.ytPlayer.mute();
+                } else {
+                    if (typeof state.ytPlayer.unMute === 'function') state.ytPlayer.unMute();
+                    if (typeof state.ytPlayer.setVolume === 'function') {
+                        state.ytPlayer.setVolume(Math.round(volumeVal));
+                    }
+                }
+            } catch (e) {}
+        }
+
+        updateMusicBarControlsUI();
+    }
+
+    function setLocalVolume(vol) {
+        const num = Number(vol);
+        state.localMusicVolume = (!isNaN(num) && num >= 0 && num <= 100) ? num : 70;
+        const volKey = state.forcePlayerView ? 'stargazer_vtt_player_preview_volume' : 'stargazer_vtt_music_volume';
+        localStorage.setItem(volKey, String(state.localMusicVolume));
+        if (state.localMusicMuted) {
+            state.localMusicMuted = false;
+            const muteKey = state.forcePlayerView ? 'stargazer_vtt_player_preview_muted' : 'stargazer_vtt_music_muted';
+            localStorage.setItem(muteKey, '0');
+        }
+        applyLocalVolume();
+    }
+
+    function toggleLocalMute() {
+        state.localMusicMuted = !state.localMusicMuted;
+        const muteKey = state.forcePlayerView ? 'stargazer_vtt_player_preview_muted' : 'stargazer_vtt_music_muted';
+        localStorage.setItem(muteKey, state.localMusicMuted ? '1' : '0');
+        applyLocalVolume();
+    }
+
+    function togglePlayerDisableMusic() {
+        state.playerMusicDisabled = !state.playerMusicDisabled;
+        const disKey = state.forcePlayerView ? 'stargazer_vtt_player_preview_music_disabled' : 'stargazer_vtt_player_music_disabled';
+        localStorage.setItem(disKey, state.playerMusicDisabled ? '1' : '0');
+        applyLocalVolume();
+        syncMusicPlayback();
+    }
+
+    function playYouTubeVideo(videoId, startSeconds = 0) {
+        if (!state.ytPlayer || !state.ytReady) {
+            state.ytPendingVideoId = videoId;
+            state.ytPendingStartSeconds = startSeconds;
+            initYouTubePlayer();
+            return;
+        }
+        try {
+            if (state.audioElement) {
+                state.audioElement.pause();
+                state.audioElement.removeAttribute('src');
+            }
+            if (typeof state.ytPlayer.loadVideoById === 'function') {
+                state.ytPlayer.loadVideoById({
+                    videoId: videoId,
+                    startSeconds: Math.max(0, Math.floor(startSeconds))
+                });
+            }
+
+            const isMuted = state.localMusicMuted || (state.playerMusicDisabled && !state.isGameGm);
+            if (!state.userHasInteracted && !state.isGameGm) {
+                try { if (typeof state.ytPlayer.mute === 'function') state.ytPlayer.mute(); } catch (e) {}
+                state.autoplayBlocked = true;
+            } else {
+                applyLocalVolume();
+                state.autoplayBlocked = false;
+            }
+
+            if (typeof state.ytPlayer.playVideo === 'function') {
+                state.ytPlayer.playVideo();
+            }
+            updateMusicBarControlsUI();
+
+            setTimeout(() => {
+                if (state.userHasInteracted || state.isGameGm) {
+                    applyLocalVolume();
+                }
+            }, 350);
+        } catch (e) {
+            console.warn('Failed to play YouTube video:', e);
+        }
+    }
+
+    function playAudioUrl(url, startSeconds = 0) {
+        initAudioElement();
+        if (!state.audioElement) return;
+
+        if (state.ytPlayer && state.ytReady) {
+            try { state.ytPlayer.stopVideo(); } catch (e) {}
+        }
+
+        applyLocalVolume();
+        if (state.audioElement.src !== url) {
+            state.audioElement.src = url;
+        }
+        if (startSeconds > 0 && Math.abs((state.audioElement.currentTime || 0) - startSeconds) > 2) {
+            try { state.audioElement.currentTime = startSeconds; } catch (e) {}
+        }
+
+        const p = state.audioElement.play();
+        if (p !== undefined) {
+            p.then(() => {
+                state.autoplayBlocked = false;
+                updateMusicBarControlsUI();
+            }).catch(err => {
+                if (err && err.name === 'NotAllowedError') {
+                    state.autoplayBlocked = true;
+                    try {
+                        state.audioElement.muted = true;
+                        state.audioElement.play().catch(() => {});
+                    } catch (e) {}
+                    updateMusicBarControlsUI();
+                }
+            });
+        }
+    }
+
+    function stopAllPlayback() {
+        if (state.audioElement) {
+            state.audioElement.pause();
+            state.audioElement.removeAttribute('src');
+        }
+        if (state.ytPlayer && state.ytReady) {
+            try { state.ytPlayer.stopVideo(); } catch (e) {}
+        }
+        state.autoplayBlocked = false;
+        updateMusicBarControlsUI();
+    }
+
+    function pauseAllPlayback() {
+        if (state.audioElement) {
+            state.audioElement.pause();
+        }
+        if (state.ytPlayer && state.ytReady) {
+            try { state.ytPlayer.pauseVideo(); } catch (e) {}
+        }
+        updateMusicBarControlsUI();
+    }
+
+    function getCurrentPlaybackPosition() {
+        const ms = state.musicState;
+        if (!ms) return 0;
+        if (ms.source_type === 'youtube' && state.ytPlayer && state.ytReady) {
+            try {
+                return state.ytPlayer.getCurrentTime() || 0;
+            } catch (e) {
+                return ms.position || 0;
+            }
+        } else if (state.audioElement && !isNaN(state.audioElement.currentTime)) {
+            return state.audioElement.currentTime;
+        }
+        return ms.position || 0;
+    }
+
+    async function broadcastMusicState(patch) {
+        if (!state.isGameGm || !state.currentGame) return;
+        try {
+            const payload = Object.assign({ game_id: state.currentGame.id }, patch);
+            const res = await apiCall('update_music_state', payload);
+            if (res.music_state) {
+                state.musicState = res.music_state;
+                syncMusicPlayback();
+            }
+        } catch (err) {
+            console.error('Failed to update music state:', err);
+        }
+    }
+
+    function syncMusicPlayback() {
+        const ms = state.musicState;
+        if (!ms || !ms.status || ms.status === 'stopped' || !ms.track_url) {
+            stopAllPlayback();
+            state.lastSyncedTrackId = null;
+            updateMusicBarControlsUI();
+            return;
+        }
+
+        // If player has explicitly disabled music:
+        if (!state.isGameGm && state.playerMusicDisabled) {
+            stopAllPlayback();
+            updateMusicBarControlsUI();
+            return;
+        }
+
+        // Compute expected target position
+        let targetPos = Number(ms.position) || 0;
+        if (ms.status === 'playing' && ms.updated_at) {
+            const nowSec = Date.now() / 1000;
+            const elapsed = Math.max(0, nowSec - Number(ms.updated_at));
+            targetPos += elapsed;
+        }
+
+        const isNewTrack = (state.lastSyncedTrackId !== ms.track_id);
+
+        if (ms.status === 'playing') {
+            if (isNewTrack) {
+                state.lastSyncedTrackId = ms.track_id;
+                if (ms.source_type === 'youtube') {
+                    const ytId = parseYoutubeId(ms.track_url);
+                    if (ytId) {
+                        playYouTubeVideo(ytId, targetPos);
+                    }
+                } else {
+                    playAudioUrl(ms.track_url, targetPos);
+                }
+            } else {
+                // Same track: verify play state and catch up drift
+                if (ms.source_type === 'youtube') {
+                    if (state.ytPlayer && state.ytReady) {
+                        try {
+                            const curState = state.ytPlayer.getPlayerState();
+                            if (curState !== 1) { // 1 = playing
+                                state.ytPlayer.playVideo();
+                            }
+                            const curTime = state.ytPlayer.getCurrentTime() || 0;
+                            if (Math.abs(curTime - targetPos) > 4) {
+                                state.ytPlayer.seekTo(targetPos, true);
+                            }
+                        } catch (e) {}
+                    }
+                } else if (state.audioElement) {
+                    if (state.audioElement.paused) {
+                        try { state.audioElement.currentTime = targetPos; } catch (e) {}
+                        state.audioElement.play().catch(e => {
+                            if (e && e.name === 'NotAllowedError') {
+                                state.autoplayBlocked = true;
+                                updateMusicBarControlsUI();
+                            }
+                        });
+                    } else {
+                        const cur = state.audioElement.currentTime || 0;
+                        if (Math.abs(cur - targetPos) > 4) {
+                            try { state.audioElement.currentTime = targetPos; } catch (e) {}
+                        }
+                    }
+                }
+            }
+        } else if (ms.status === 'paused') {
+            pauseAllPlayback();
+            state.lastSyncedTrackId = ms.track_id;
+            if (ms.source_type === 'youtube' && state.ytPlayer && state.ytReady) {
+                try { state.ytPlayer.seekTo(Number(ms.position) || 0, true); } catch (e) {}
+            } else if (state.audioElement) {
+                try { state.audioElement.currentTime = Number(ms.position) || 0; } catch (e) {}
+            }
+        }
+
+        updateMusicBarControlsUI();
+    }
+
+    function updateMusicBarControlsUI() {
+        const ms = state.musicState;
+        const titleEl = $('music-track-title');
+        const playlistEl = $('music-track-playlist');
+        const indicatorEl = $('music-indicator-icon');
+
+        if (titleEl && playlistEl) {
+            if (ms && ms.track_title && ms.status && ms.status !== 'stopped') {
+                titleEl.textContent = (ms.status === 'playing' ? '▶ ' : '⏸️ ') + ms.track_title;
+                const pl = (state.playlists || []).find(p => p.id === ms.playlist_id);
+                playlistEl.textContent = pl ? `(${pl.name})` : '';
+                if (indicatorEl) indicatorEl.classList.toggle('is-playing', ms.status === 'playing');
+            } else {
+                titleEl.textContent = 'No music playing';
+                playlistEl.textContent = '';
+                if (indicatorEl) indicatorEl.classList.remove('is-playing');
+            }
+        }
+
+        const gmGroup = $('music-gm-controls');
+        const playerGroup = $('music-player-controls');
+        if (state.isGameGm) {
+            if (gmGroup) gmGroup.classList.remove('hidden');
+            if (playerGroup) playerGroup.classList.add('hidden');
+            const playpauseBtn = $('btn-music-playpause');
+            if (playpauseBtn) {
+                const isPlaying = (ms && ms.status === 'playing');
+                playpauseBtn.innerHTML = isPlaying
+                    ? '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>'
+                    : '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+                playpauseBtn.title = isPlaying ? 'Pause Music (GM)' : 'Play Music (GM)';
+            }
+            const repeatBtn = $('btn-music-repeat');
+            if (repeatBtn) {
+                const mode = (ms && ms.repeat_mode) || 'playlist';
+                const svgs = {
+                    playlist: '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>',
+                    track: '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/><circle cx="12" cy="12" r="3" fill="var(--accent-gold)"/></svg>',
+                    none: '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" opacity="0.35"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>'
+                };
+                const titles = {
+                    playlist: 'Repeat Mode: Playlist (Loops all tracks)',
+                    track: 'Repeat Mode: Track (Loops active track)',
+                    none: 'Repeat Mode: Off (Stops at end)'
+                };
+                repeatBtn.innerHTML = svgs[mode] || svgs.playlist;
+                repeatBtn.title = titles[mode] || '';
+            }
+        } else {
+            if (gmGroup) gmGroup.classList.add('hidden');
+            if (playerGroup) playerGroup.classList.remove('hidden');
+            const disBtn = $('btn-player-disable-music');
+            if (disBtn) {
+                if (state.playerMusicDisabled) {
+                    disBtn.textContent = 'Music: OFF';
+                    disBtn.className = 'btn btn-danger btn-xs';
+                    disBtn.title = 'Music is currently disabled for you. Click to enable.';
+                } else {
+                    disBtn.textContent = 'Music: ON';
+                    disBtn.className = 'btn btn-secondary btn-xs';
+                    disBtn.title = 'Music is enabled. Click to disable playback completely.';
+                }
+            }
+        }
+
+        const volSlider = $('music-volume-slider');
+        if (volSlider && document.activeElement !== volSlider) {
+            volSlider.value = state.localMusicVolume;
+            volSlider.title = `Volume: ${state.localMusicVolume}%`;
+        }
+
+        const muteBtn = $('btn-music-mute');
+        if (muteBtn) {
+            const isMuted = state.localMusicMuted || (state.playerMusicDisabled && !state.isGameGm);
+            muteBtn.innerHTML = isMuted
+                ? '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>'
+                : '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+            muteBtn.title = isMuted ? 'Local Mute: ON (Click to unmute)' : 'Local Mute: OFF (Click to mute)';
+        }
+
+        const unlockBtn = $('btn-music-unlock');
+        if (unlockBtn) {
+            unlockBtn.classList.toggle('hidden', !state.autoplayBlocked);
+            unlockBtn.classList.toggle('pulse', state.autoplayBlocked);
+        }
+    }
+
+    function togglePlayPause() {
+        if (!state.isGameGm) return;
+        const ms = state.musicState;
+
+        if (!ms || ms.status === 'stopped' || !ms.track_url) {
+            let pl = (state.playlists || []).find(p => p.id === state.selectedPlaylistId);
+            if (!pl || !pl.tracks || pl.tracks.length === 0) {
+                pl = (state.playlists || []).find(p => p.tracks && p.tracks.length > 0);
+            }
+            if (!pl || !pl.tracks || pl.tracks.length === 0) {
+                openMusicModal();
+                return;
+            }
+            playTrackFromPlaylist(pl.id, pl.tracks[0].id);
+            return;
+        }
+
+        if (ms.status === 'playing') {
+            const pos = getCurrentPlaybackPosition();
+            broadcastMusicState({ status: 'paused', position: pos });
+        } else {
+            broadcastMusicState({ status: 'playing', position: Number(ms.position) || 0 });
+        }
+    }
+
+    function nextTrack() {
+        if (!state.isGameGm) return;
+        const ms = state.musicState;
+        if (!ms) return;
+
+        const playlist = (state.playlists || []).find(p => p.id === ms.playlist_id);
+        if (!playlist || !playlist.tracks || playlist.tracks.length === 0) return;
+
+        const currentIndex = playlist.tracks.findIndex(t => t.id === ms.track_id);
+        const nextIndex = (currentIndex >= 0 && currentIndex + 1 < playlist.tracks.length)
+            ? (currentIndex + 1)
+            : 0;
+        const next = playlist.tracks[nextIndex];
+        broadcastMusicState({
+            status: 'playing',
+            playlist_id: playlist.id,
+            track_id: next.id,
+            track_title: next.title,
+            track_url: next.url,
+            source_type: next.source_type,
+            position: 0
+        });
+    }
+
+    function prevTrack() {
+        if (!state.isGameGm) return;
+        const ms = state.musicState;
+        if (!ms) return;
+
+        const curPos = getCurrentPlaybackPosition();
+        if (curPos > 3) {
+            broadcastMusicState({ status: 'playing', position: 0 });
+            return;
+        }
+
+        const playlist = (state.playlists || []).find(p => p.id === ms.playlist_id);
+        if (!playlist || !playlist.tracks || playlist.tracks.length === 0) return;
+
+        const currentIndex = playlist.tracks.findIndex(t => t.id === ms.track_id);
+        const prevIndex = (currentIndex > 0) ? (currentIndex - 1) : (playlist.tracks.length - 1);
+        const prev = playlist.tracks[prevIndex];
+        broadcastMusicState({
+            status: 'playing',
+            playlist_id: playlist.id,
+            track_id: prev.id,
+            track_title: prev.title,
+            track_url: prev.url,
+            source_type: prev.source_type,
+            position: 0
+        });
+    }
+
+    function toggleRepeatMode() {
+        if (!state.isGameGm) return;
+        const curMode = (state.musicState && state.musicState.repeat_mode) || 'playlist';
+        const nextMode = curMode === 'playlist' ? 'track' : (curMode === 'track' ? 'none' : 'playlist');
+        broadcastMusicState({ repeat_mode: nextMode });
+    }
+
+    function handleTrackEnded() {
+        if (!state.isGameGm) return;
+        const ms = state.musicState;
+        if (!ms) return;
+        const mode = ms.repeat_mode || 'playlist';
+
+        if (mode === 'track') {
+            broadcastMusicState({ status: 'playing', position: 0 });
+            return;
+        }
+
+        const playlist = (state.playlists || []).find(p => p.id === ms.playlist_id);
+        if (!playlist || !playlist.tracks || playlist.tracks.length === 0) {
+            broadcastMusicState({ status: 'stopped', position: 0 });
+            return;
+        }
+
+        const currentIndex = playlist.tracks.findIndex(t => t.id === ms.track_id);
+        if (currentIndex === -1) {
+            const first = playlist.tracks[0];
+            broadcastMusicState({
+                status: 'playing',
+                playlist_id: playlist.id,
+                track_id: first.id,
+                track_title: first.title,
+                track_url: first.url,
+                source_type: first.source_type,
+                position: 0
+            });
+            return;
+        }
+
+        const nextIndex = currentIndex + 1;
+        if (nextIndex < playlist.tracks.length) {
+            const next = playlist.tracks[nextIndex];
+            broadcastMusicState({
+                status: 'playing',
+                playlist_id: playlist.id,
+                track_id: next.id,
+                track_title: next.title,
+                track_url: next.url,
+                source_type: next.source_type,
+                position: 0
+            });
+        } else if (mode === 'playlist') {
+            const first = playlist.tracks[0];
+            broadcastMusicState({
+                status: 'playing',
+                playlist_id: playlist.id,
+                track_id: first.id,
+                track_title: first.title,
+                track_url: first.url,
+                source_type: first.source_type,
+                position: 0
+            });
+        } else {
+            broadcastMusicState({ status: 'stopped', position: 0 });
+        }
+    }
+
+    function playTrackFromPlaylist(playlistId, trackId) {
+        if (!state.isGameGm) return;
+        const pl = (state.playlists || []).find(p => p.id === playlistId);
+        if (!pl) return;
+        const track = (pl.tracks || []).find(t => t.id === trackId);
+        if (!track) return;
+
+        broadcastMusicState({
+            status: 'playing',
+            playlist_id: pl.id,
+            track_id: track.id,
+            track_title: track.title,
+            track_url: track.url,
+            source_type: track.source_type,
+            position: 0,
+            repeat_mode: (state.musicState && state.musicState.repeat_mode) || 'playlist'
+        });
+    }
+
+    async function openMusicModal() {
+        if (!state.currentGame) return;
+        try {
+            const res = await apiCall('get_playlists', { game_id: state.currentGame.id });
+            state.playlists = res.playlists || [];
+            if (res.music_state) {
+                state.musicState = res.music_state;
+            }
+            if (state.playlists.length > 0) {
+                if (!state.selectedPlaylistId || !state.playlists.some(p => p.id === state.selectedPlaylistId)) {
+                    state.selectedPlaylistId = state.playlists[0].id;
+                }
+            } else {
+                state.selectedPlaylistId = 0;
+            }
+            renderPlaylistsSidebar();
+            renderPlaylistDetail();
+            $('modal-music-library').classList.remove('hidden');
+        } catch (err) {
+            showAlertModal('Failed to load playlists: ' + err.message, 'Music Library Error', '⚠️');
+        }
+    }
+
+    function closeMusicModal() {
+        $('modal-music-library').classList.add('hidden');
+    }
+
+    function renderPlaylistsSidebar(filterText = '') {
+        const listEl = $('playlists-list');
+        if (!listEl) return;
+        listEl.innerHTML = '';
+
+        const search = (typeof filterText === 'string' ? filterText : ($('playlist-search-input')?.value || '')).trim().toLowerCase();
+        const filtered = (state.playlists || []).filter(p => !search || p.name.toLowerCase().includes(search));
+
+        if (filtered.length === 0) {
+            const empty = document.createElement('div');
+            empty.style.padding = '16px';
+            empty.style.color = 'var(--text-muted)';
+            empty.style.fontSize = '0.82rem';
+            empty.style.textAlign = 'center';
+            empty.textContent = search ? 'No playlists match your search.' : 'No playlists yet. Click "+ New Playlist" above.';
+            listEl.appendChild(empty);
+            return;
+        }
+
+        filtered.forEach(p => {
+            const item = document.createElement('div');
+            item.className = 'playlist-list-item' + (p.id === state.selectedPlaylistId ? ' active' : '');
+            item.setAttribute('data-select-playlist', String(p.id));
+
+            const isPlayingInThis = (state.musicState && state.musicState.playlist_id === p.id && state.musicState.status === 'playing');
+
+            item.innerHTML = `
+                <div class="playlist-item-meta">
+                    <span class="playlist-item-title">${escapeHtml(p.name)}</span>
+                    <span class="playlist-item-count">${(p.tracks || []).length} track${(p.tracks || []).length === 1 ? '' : 's'}${isPlayingInThis ? ' • <span style="color:var(--accent-gold);">▶ Playing</span>' : ''}</span>
+                </div>
+            `;
+            listEl.appendChild(item);
+        });
+    }
+
+    function renderPlaylistDetail() {
+        const emptyEl = $('music-empty-state');
+        const contentEl = $('music-playlist-content');
+        if (!emptyEl || !contentEl) return;
+
+        const playlist = (state.playlists || []).find(p => p.id === state.selectedPlaylistId);
+        if (!playlist) {
+            emptyEl.classList.remove('hidden');
+            contentEl.classList.add('hidden');
+            return;
+        }
+
+        emptyEl.classList.add('hidden');
+        contentEl.classList.remove('hidden');
+
+        const nameInput = $('playlist-name-input');
+        if (nameInput) {
+            if (document.activeElement !== nameInput || state._lastRenderedPlaylistId !== playlist.id) {
+                nameInput.value = playlist.name;
+            }
+        }
+        state._lastRenderedPlaylistId = playlist.id;
+
+        $('current-playlist-track-count').textContent = String((playlist.tracks || []).length);
+
+        const repeatBadge = $('btn-modal-repeat-toggle');
+        if (repeatBadge) {
+            const mode = (state.musicState && state.musicState.repeat_mode) || 'playlist';
+            const labels = {
+                playlist: '🔁 Repeat: Playlist',
+                track: '🔂 Repeat: Track',
+                none: '➡️ Repeat: Off'
+            };
+            repeatBadge.textContent = labels[mode] || '🔁 Repeat: Playlist';
+        }
+
+        const tracksContainer = $('playlist-tracks-list');
+        tracksContainer.innerHTML = '';
+
+        if (!playlist.tracks || playlist.tracks.length === 0) {
+            const noTracks = document.createElement('div');
+            noTracks.style.padding = '24px';
+            noTracks.style.color = 'var(--text-muted)';
+            noTracks.style.fontSize = '0.85rem';
+            noTracks.style.textAlign = 'center';
+            noTracks.textContent = 'This playlist is empty. Add a YouTube or Web Audio link above!';
+            tracksContainer.appendChild(noTracks);
+            return;
+        }
+
+        playlist.tracks.forEach((track) => {
+            const isPlayingThisTrack = (
+                state.musicState &&
+                state.musicState.playlist_id === playlist.id &&
+                state.musicState.track_id === track.id &&
+                state.musicState.status === 'playing'
+            );
+
+            const isPausedThisTrack = (
+                state.musicState &&
+                state.musicState.playlist_id === playlist.id &&
+                state.musicState.track_id === track.id &&
+                state.musicState.status === 'paused'
+            );
+
+            const row = document.createElement('div');
+            row.className = 'playlist-track-item' + (isPlayingThisTrack || isPausedThisTrack ? ' is-active-track' : '');
+            row.setAttribute('data-track-id', track.id);
+
+            const isYt = (track.source_type === 'youtube');
+            const playSvg = isPlayingThisTrack
+                ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>'
+                : '<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+
+            row.innerHTML = `
+                <button type="button" class="track-play-btn" data-action-play-track="${escapeHtml(track.id)}" title="${isPlayingThisTrack ? 'Pause Track' : 'Play Track for Session'}">
+                    ${playSvg}
+                </button>
+                <span class="track-source-badge ${isYt ? 'badge-youtube' : 'badge-audio'}">
+                    ${isYt ? 'YouTube' : 'Audio'}
+                </span>
+                <div class="track-info">
+                    <span class="track-title">${escapeHtml(track.title || 'Untitled Track')}</span>
+                    <span class="track-url">${escapeHtml(track.url)}</span>
+                </div>
+                <button type="button" class="track-del-btn" data-action-delete-track="${escapeHtml(track.id)}" title="Delete Track">
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                </button>
+            `;
+            tracksContainer.appendChild(row);
+        });
+    }
+
+    async function handleCreatePlaylist() {
+        if (!state.currentGame) return;
+        try {
+            const res = await apiCall('save_playlist', {
+                game_id: state.currentGame.id,
+                name: 'New Playlist'
+            });
+            state.playlists = res.playlists || [];
+            if (res.playlist) {
+                state.selectedPlaylistId = res.playlist.id;
+            }
+            state._lastRenderedPlaylistId = null;
+            renderPlaylistsSidebar();
+            renderPlaylistDetail();
+            const nameInput = $('playlist-name-input');
+            if (nameInput) {
+                nameInput.focus();
+                nameInput.select();
+            }
+            updateVttHeaderAndHud();
+        } catch (err) {
+            showAlertModal('Failed to create playlist: ' + err.message, 'Create Error', '⚠️');
+        }
+    }
+
+    async function handleRenamePlaylist() {
+        if (!state.currentGame || !state.selectedPlaylistId) return;
+        const nameInput = $('playlist-name-input');
+        if (!nameInput) return;
+        const name = nameInput.value.trim();
+        if (!name) return;
+
+        const playlist = (state.playlists || []).find(p => p.id === state.selectedPlaylistId);
+        if (playlist && playlist.name === name) return;
+
+        if (playlist) {
+            playlist.name = name;
+            renderPlaylistsSidebar();
+        }
+
+        try {
+            const res = await apiCall('save_playlist', {
+                game_id: state.currentGame.id,
+                id: state.selectedPlaylistId,
+                name: name
+            });
+            state.playlists = res.playlists || [];
+            renderPlaylistsSidebar();
+            updateVttHeaderAndHud();
+        } catch (err) {
+            showAlertModal('Failed to rename playlist: ' + err.message, 'Rename Error', '⚠️');
+        }
+    }
+
+    function handlePlayEntirePlaylist() {
+        if (!state.selectedPlaylistId) return;
+        const pl = (state.playlists || []).find(p => p.id === state.selectedPlaylistId);
+        if (!pl || !pl.tracks || pl.tracks.length === 0) {
+            showAlertModal('Please add at least one track to this playlist before playing.', 'Empty Playlist', 'ℹ️');
+            return;
+        }
+        playTrackFromPlaylist(pl.id, pl.tracks[0].id);
+    }
+
+    async function handleDeletePlaylist() {
+        if (!state.currentGame || !state.selectedPlaylistId) return;
+        const pl = (state.playlists || []).find(p => p.id === state.selectedPlaylistId);
+        const name = pl ? pl.name : 'this playlist';
+
+        const confirmed = await showConfirmModal({
+            title: 'Delete Playlist',
+            message: `Permanently delete playlist "${name}" and all its tracks?`,
+            detail: 'This action cannot be undone.',
+            okText: 'Delete Playlist',
+            isDanger: true,
+            icon: '🎵'
+        });
+        if (!confirmed) return;
+
+        try {
+            const res = await apiCall('delete_playlist', {
+                game_id: state.currentGame.id,
+                id: state.selectedPlaylistId
+            });
+            state.playlists = res.playlists || [];
+            state.selectedPlaylistId = state.playlists.length > 0 ? state.playlists[0].id : 0;
+            renderPlaylistsSidebar();
+            renderPlaylistDetail();
+            updateVttHeaderAndHud();
+        } catch (err) {
+            showAlertModal('Failed to delete playlist: ' + err.message, 'Delete Error', '⚠️');
+        }
+    }
+
+    async function handleAddTrack(e) {
+        e.preventDefault();
+        if (!state.currentGame || !state.selectedPlaylistId) return;
+
+        const titleInput = $('track-title-input');
+        const urlInput = $('track-url-input');
+        const title = titleInput.value.trim();
+        const url = urlInput.value.trim();
+        if (!url) return;
+
+        const addBtn = $('btn-add-track');
+        const origText = addBtn.textContent;
+        addBtn.textContent = 'Adding...';
+        addBtn.disabled = true;
+
+        try {
+            const res = await apiCall('add_playlist_track', {
+                game_id: state.currentGame.id,
+                playlist_id: state.selectedPlaylistId,
+                title,
+                url
+            });
+            state.playlists = res.playlists || [];
+            titleInput.value = '';
+            urlInput.value = '';
+            renderPlaylistsSidebar();
+            renderPlaylistDetail();
+        } catch (err) {
+            showAlertModal('Failed to add track: ' + err.message, 'Add Track Error', '⚠️');
+        } finally {
+            addBtn.textContent = origText;
+            addBtn.disabled = false;
+        }
+    }
+
+    async function handleDeleteTrack(playlistId, trackId) {
+        if (!state.currentGame || !playlistId || !trackId) return;
+        const pl = (state.playlists || []).find(p => p.id === playlistId);
+        const track = pl ? (pl.tracks || []).find(t => t.id === trackId) : null;
+        const title = track ? track.title : 'this track';
+
+        const confirmed = await showConfirmModal({
+            title: 'Delete Track',
+            message: `Remove "${title}" from the playlist?`,
+            okText: 'Remove Track',
+            isDanger: true,
+            icon: '🗑️'
+        });
+        if (!confirmed) return;
+
+        try {
+            const res = await apiCall('delete_playlist_track', {
+                game_id: state.currentGame.id,
+                playlist_id: playlistId,
+                track_id: trackId
+            });
+            state.playlists = res.playlists || [];
+            renderPlaylistsSidebar();
+            renderPlaylistDetail();
+        } catch (err) {
+            showAlertModal('Failed to delete track: ' + err.message, 'Delete Error', '⚠️');
+        }
+    }
+
+    function bindMusicEvents() {
+        const openMusicBtn = $('btn-open-music-library');
+        if (openMusicBtn) openMusicBtn.addEventListener('click', openMusicModal);
+
+        const closeMusicBtn = $('btn-close-music-modal');
+        if (closeMusicBtn) closeMusicBtn.addEventListener('click', closeMusicModal);
+
+        const playpauseBtn = $('btn-music-playpause');
+        if (playpauseBtn) playpauseBtn.addEventListener('click', togglePlayPause);
+
+        const nextBtn = $('btn-music-next');
+        if (nextBtn) nextBtn.addEventListener('click', nextTrack);
+
+        const prevBtn = $('btn-music-prev');
+        if (prevBtn) prevBtn.addEventListener('click', prevTrack);
+
+        const repeatBtn = $('btn-music-repeat');
+        if (repeatBtn) repeatBtn.addEventListener('click', toggleRepeatMode);
+
+        const modalRepeatBtn = $('btn-modal-repeat-toggle');
+        if (modalRepeatBtn) modalRepeatBtn.addEventListener('click', toggleRepeatMode);
+
+        const muteBtn = $('btn-music-mute');
+        if (muteBtn) muteBtn.addEventListener('click', toggleLocalMute);
+
+        const volSlider = $('music-volume-slider');
+        if (volSlider) {
+            const handleVolChange = (e) => {
+                const val = Number(e.target.value);
+                volSlider.title = `Volume: ${val}%`;
+                setLocalVolume(val);
+            };
+            volSlider.addEventListener('input', handleVolChange);
+            volSlider.addEventListener('change', handleVolChange);
+        }
+
+        const playerDisBtn = $('btn-player-disable-music');
+        if (playerDisBtn) playerDisBtn.addEventListener('click', togglePlayerDisableMusic);
+
+        const unlockBtn = $('btn-music-unlock');
+        if (unlockBtn) {
+            unlockBtn.addEventListener('click', () => {
+                state.userHasInteracted = true;
+                state.autoplayBlocked = false;
+                applyLocalVolume();
+                updateMusicBarControlsUI();
+                if (state.audioElement && state.musicState && state.musicState.status === 'playing') {
+                    state.audioElement.muted = state.localMusicMuted;
+                    state.audioElement.play().catch(() => {});
+                }
+                if (state.ytPlayer && state.musicState && state.musicState.status === 'playing') {
+                    try {
+                        const isMuted = state.localMusicMuted || (state.playerMusicDisabled && !state.isGameGm);
+                        if (!isMuted && typeof state.ytPlayer.unMute === 'function') {
+                            state.ytPlayer.unMute();
+                            if (typeof state.ytPlayer.setVolume === 'function') {
+                                state.ytPlayer.setVolume(Math.round(state.localMusicVolume || 70));
+                            }
+                        }
+                        if (typeof state.ytPlayer.playVideo === 'function') {
+                            state.ytPlayer.playVideo();
+                        }
+                    } catch (e) {}
+                }
+            });
+        }
+
+        const newPlBtn = $('btn-new-playlist');
+        if (newPlBtn) newPlBtn.addEventListener('click', handleCreatePlaylist);
+
+        const savePlBtn = $('btn-save-playlist-name');
+        if (savePlBtn) savePlBtn.addEventListener('click', handleRenamePlaylist);
+
+        const plNameInput = $('playlist-name-input');
+        if (plNameInput) {
+            plNameInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleRenamePlaylist();
+                    plNameInput.blur();
+                }
+            });
+            plNameInput.addEventListener('blur', () => {
+                handleRenamePlaylist();
+            });
+        }
+
+        const playAllBtn = $('btn-play-entire-playlist');
+        if (playAllBtn) playAllBtn.addEventListener('click', handlePlayEntirePlaylist);
+
+        const delPlBtn = $('btn-delete-playlist');
+        if (delPlBtn) delPlBtn.addEventListener('click', handleDeletePlaylist);
+
+        const addTrackForm = $('form-add-track');
+        if (addTrackForm) addTrackForm.addEventListener('submit', handleAddTrack);
+
+        const searchInput = $('playlist-search-input');
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                renderPlaylistsSidebar(e.target.value);
+            });
+        }
+
+        const plListEl = $('playlists-list');
+        if (plListEl) {
+            plListEl.addEventListener('click', (e) => {
+                const item = e.target.closest('[data-select-playlist]');
+                if (item) {
+                    state.selectedPlaylistId = Number(item.getAttribute('data-select-playlist'));
+                    renderPlaylistsSidebar();
+                    renderPlaylistDetail();
+                }
+            });
+        }
+
+        const tracksListEl = $('playlist-tracks-list');
+        if (tracksListEl) {
+            tracksListEl.addEventListener('click', (e) => {
+                const playBtn = e.target.closest('[data-action-play-track]');
+                if (playBtn) {
+                    const trackId = playBtn.getAttribute('data-action-play-track');
+                    const ms = state.musicState;
+                    if (ms && ms.playlist_id === state.selectedPlaylistId && ms.track_id === trackId && ms.status === 'playing') {
+                        togglePlayPause();
+                    } else {
+                        playTrackFromPlaylist(state.selectedPlaylistId, trackId);
+                    }
+                    return;
+                }
+
+                const delBtn = e.target.closest('[data-action-delete-track]');
+                if (delBtn) {
+                    const trackId = delBtn.getAttribute('data-action-delete-track');
+                    handleDeleteTrack(state.selectedPlaylistId, trackId);
+                    return;
+                }
+
+                const row = e.target.closest('.playlist-track-item');
+                if (row) {
+                    const trackId = row.getAttribute('data-track-id');
+                    if (trackId) {
+                        playTrackFromPlaylist(state.selectedPlaylistId, trackId);
+                    }
+                }
+            });
+        }
+    }
+
+    // =========================================================
+    // EMBEDDED PDF LIBRARY & VIEWER CONTROLLER
+    // =========================================================
+
+    function formatFileSize(bytes) {
+        if (!bytes || bytes <= 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+    }
+
+    function openEmbeddedPdfReader(pdf) {
+        if (!pdf || !pdf.filename) return;
+        state.activeViewerPdf = pdf;
+
+        const titleEl = $('pdf-viewer-title');
+        if (titleEl) {
+            titleEl.textContent = pdf.title || 'PDF Document';
+        }
+
+        const frame = $('pdf-viewer-frame');
+        if (frame) {
+            frame.src = pdf.filename + '#view=FitH';
+        }
+
+        const newTabBtn = $('btn-pdf-new-tab');
+        if (newTabBtn) {
+            newTabBtn.href = pdf.filename;
+        }
+
+        const viewerModal = $('modal-pdf-viewer');
+        if (viewerModal) {
+            viewerModal.classList.remove('hidden');
+        }
+    }
+
+    function closeEmbeddedPdfReader() {
+        state.activeViewerPdf = null;
+        const frame = $('pdf-viewer-frame');
+        if (frame) {
+            frame.src = '';
+        }
+        const viewerModal = $('modal-pdf-viewer');
+        if (viewerModal) {
+            viewerModal.classList.add('hidden');
+        }
+        const card = $('pdf-viewer-card');
+        if (card) {
+            card.classList.remove('is-maximized');
+        }
+        const maximizeBtn = $('btn-pdf-maximize');
+        if (maximizeBtn) {
+            maximizeBtn.textContent = '⛶';
+        }
+    }
+
+    function openPdfLibraryModal() {
+        const modal = $('modal-pdf-library');
+        if (!modal) return;
+        modal.classList.remove('hidden');
+
+        const uploadBar = $('pdf-upload-bar');
+        const dropzoneCue = $('pdf-dropzone-cue');
+        const playerInfoBar = $('pdf-player-info-bar');
+
+        if (state.isGameGm) {
+            if (uploadBar) uploadBar.classList.remove('hidden');
+            if (dropzoneCue) dropzoneCue.classList.remove('hidden');
+            if (playerInfoBar) playerInfoBar.classList.add('hidden');
+        } else {
+            if (uploadBar) uploadBar.classList.add('hidden');
+            if (dropzoneCue) dropzoneCue.classList.add('hidden');
+            if (playerInfoBar) playerInfoBar.classList.remove('hidden');
+        }
+
+        renderPdfLibraryModal();
+    }
+
+    function closePdfLibraryModal() {
+        const modal = $('modal-pdf-library');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    function renderPdfLibraryModal() {
+        const container = $('pdf-library-grid');
+        if (!container) return;
+
+        const q = (state.pdfLibrarySearch || '').toLowerCase().trim();
+        const list = (state.pdfs || []).filter(p => {
+            if (!q) return true;
+            return (p.title || '').toLowerCase().includes(q) || (p.filename || '').toLowerCase().includes(q);
+        });
+
+        if (list.length === 0) {
+            if (state.isGameGm) {
+                container.innerHTML = `
+                    <div style="grid-column: 1 / -1; padding: 40px 20px; text-align: center; color: var(--text-muted);">
+                        <div style="font-size: 2.2rem; margin-bottom: 10px;">📖</div>
+                        <div style="font-size: 1rem; font-weight: 600; margin-bottom: 6px; color: var(--text-primary);">No PDF Documents Yet</div>
+                        <p style="font-size: 0.85rem; margin: 0 auto; max-width: 420px;">
+                            Click <strong>+ Upload PDF(s)</strong> above or drag and drop PDF rulebooks, handouts, or character sheets anywhere here.
+                        </p>
+                    </div>`;
+            } else {
+                container.innerHTML = `
+                    <div style="grid-column: 1 / -1; padding: 40px 20px; text-align: center; color: var(--text-muted);">
+                        <div style="font-size: 2.2rem; margin-bottom: 10px;">📖</div>
+                        <div style="font-size: 1rem; font-weight: 600; margin-bottom: 6px; color: var(--text-primary);">No PDFs Shared Yet</div>
+                        <p style="font-size: 0.85rem; margin: 0 auto; max-width: 420px;">
+                            Your Game Master hasn't shared any PDF documents in this campaign yet. Check back during the session!
+                        </p>
+                    </div>`;
+            }
+            return;
+        }
+
+        container.innerHTML = list.map(pdf => {
+            const isShared = Boolean(Number(pdf.is_shared));
+            const sizeStr = formatFileSize(pdf.filesize);
+
+            let statusHtml = '';
+            if (state.isGameGm) {
+                statusHtml = isShared
+                    ? '<span class="pdf-shared-badge is-shared" title="Visible to all players in the campaign">👥 Shared</span>'
+                    : '<span class="pdf-shared-badge is-private" title="Only visible to the GM">🔒 GM Only</span>';
+            }
+
+            let gmActions = '';
+            if (state.isGameGm) {
+                const shareBtnTitle = isShared
+                    ? 'Shared with players (Click to unshare / make private)'
+                    : 'Private to GM (Click to share with players)';
+                const shareIcon = isShared ? '👥' : '🔒';
+                const shareBtnClass = isShared ? 'btn-success' : 'btn-secondary';
+
+                gmActions = `
+                    <button type="button" class="btn ${shareBtnClass} btn-xs" data-action-toggle-share="${pdf.id}" title="${shareBtnTitle}">${shareIcon}</button>
+                    <button type="button" class="btn btn-danger btn-xs" data-action-delete-pdf="${pdf.id}" title="Delete document">🗑️</button>
+                `;
+            }
+
+            let coverHtml = '';
+            if (pdf.cover_image) {
+                coverHtml = `
+                    <div class="pdf-card-cover-wrap" data-action-view-pdf="${pdf.id}" title="Click to read ${escapeHtml(pdf.title)}">
+                        <img src="${escapeHtml(pdf.cover_image)}" alt="${escapeHtml(pdf.title)} cover" class="pdf-card-cover-img" loading="lazy">
+                        <div class="pdf-cover-overlay">📖 Read</div>
+                    </div>
+                `;
+            } else {
+                coverHtml = `
+                    <div class="pdf-card-cover-wrap pdf-cover-fallback" data-action-view-pdf="${pdf.id}" title="Click to read ${escapeHtml(pdf.title)}">
+                        <div class="pdf-cover-fallback-icon">📖</div>
+                        <div class="pdf-cover-fallback-text">${escapeHtml(pdf.title)}</div>
+                        <div class="pdf-cover-overlay">📖 Read</div>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="pdf-card" data-pdf-id="${pdf.id}">
+                    ${coverHtml}
+                    <div class="pdf-card-info">
+                        <div class="pdf-card-title" title="${escapeHtml(pdf.title)}">${escapeHtml(pdf.title)}</div>
+                        <div class="pdf-card-meta">
+                            <span>${sizeStr}</span>
+                            ${statusHtml}
+                        </div>
+                    </div>
+                    <div class="pdf-card-actions">
+                        <button type="button" class="btn btn-primary btn-xs" data-action-view-pdf="${pdf.id}" title="Read / Open document">📖</button>
+                        ${gmActions}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function handleUploadPdfs(fileList) {
+        if (!state.currentGame || !state.isGameGm) return;
+        const files = Array.from(fileList || []).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.type === 'application/pdf');
+        if (files.length === 0) {
+            showAlertModal('Please select valid PDF (.pdf) files.', 'Upload Error', '⚠️');
+            return;
+        }
+
+        const totalBytes = files.reduce((acc, f) => acc + (f.size || 0), 0);
+        const totalSizeStr = formatFileSize(totalBytes);
+
+        const formData = new FormData();
+        formData.append('action', 'upload_pdf');
+        formData.append('game_id', state.currentGame.id);
+        formData.append('is_shared', '0'); // Private by default - never autoshare
+        files.forEach(f => formData.append('pdfs[]', f));
+
+        const cue = $('pdf-dropzone-cue');
+        const uploadBtn = $('btn-upload-pdf');
+        const origBtnText = uploadBtn ? uploadBtn.textContent : '+ Upload PDF(s)';
+
+        if (cue) cue.textContent = `⏳ Uploading ${files.length} PDF file(s) (${totalSizeStr})... Please wait.`;
+        if (uploadBtn) {
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = '⏳ Uploading...';
+        }
+
+        try {
+            const res = await apiCall('upload_pdf', formData, true);
+            if (res.skipped && res.skipped.length > 0) {
+                showAlertModal('Some files could not be uploaded:\n' + res.skipped.join('\n'), 'Upload Notice', 'ℹ️');
+            }
+            if (res.pdfs) {
+                state.pdfs = res.pdfs;
+                renderPdfLibraryModal();
+                updateVttHeaderAndHud();
+            }
+        } catch (err) {
+            showAlertModal('Failed to upload PDF(s): ' + err.message, 'Upload Error', '⚠️');
+        } finally {
+            if (cue) cue.textContent = '📥 Drop PDF files anywhere here to upload';
+            if (uploadBtn) {
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = origBtnText;
+            }
+        }
+    }
+
+    async function handleDeletePdf(pdfId) {
+        if (!state.currentGame || !state.isGameGm) return;
+        const pdf = state.pdfs.find(p => p.id === pdfId);
+        const name = pdf ? pdf.title : 'this PDF';
+        if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
+
+        try {
+            const res = await apiCall('delete_pdf', {
+                game_id: state.currentGame.id,
+                pdf_id: pdfId
+            });
+            if (res.pdfs) {
+                state.pdfs = res.pdfs;
+                if (state.activeViewerPdf && state.activeViewerPdf.id === pdfId) {
+                    closeEmbeddedPdfReader();
+                }
+                renderPdfLibraryModal();
+                updateVttHeaderAndHud();
+            }
+        } catch (err) {
+            showAlertModal('Failed to delete PDF: ' + err.message, 'Delete Error', '⚠️');
+        }
+    }
+
+    async function handleToggleSharePdf(pdfId, newShareState) {
+        if (!state.currentGame || !state.isGameGm) return;
+        try {
+            const res = await apiCall('share_pdf', {
+                game_id: state.currentGame.id,
+                pdf_id: pdfId,
+                is_shared: newShareState ? 1 : 0
+            });
+            if (res.pdfs) {
+                state.pdfs = res.pdfs;
+                renderPdfLibraryModal();
+                updateVttHeaderAndHud();
+            }
+        } catch (err) {
+            showAlertModal('Failed to update PDF share status: ' + err.message, 'Share Error', '⚠️');
+        }
+    }
+
+    function bindPdfEvents() {
+        const btnOpenHud = $('btn-open-pdf-library');
+        if (btnOpenHud) btnOpenHud.addEventListener('click', openPdfLibraryModal);
+
+        const btnOpenNav = $('btn-nav-pdf-library');
+        if (btnOpenNav) btnOpenNav.addEventListener('click', openPdfLibraryModal);
+
+        const btnCloseLib = $('btn-close-pdf-library');
+        if (btnCloseLib) btnCloseLib.addEventListener('click', closePdfLibraryModal);
+
+        const btnUpload = $('btn-upload-pdf');
+        const fileInput = $('pdf-file-input');
+        if (btnUpload && fileInput) {
+            btnUpload.addEventListener('click', () => {
+                fileInput.value = '';
+                fileInput.click();
+            });
+            fileInput.addEventListener('change', (e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                    handleUploadPdfs(e.target.files);
+                }
+            });
+        }
+
+        const libModal = $('modal-pdf-library');
+        if (libModal) {
+            const cue = $('pdf-dropzone-cue');
+            libModal.addEventListener('dragover', (e) => {
+                if (!state.isGameGm) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (cue) cue.classList.add('is-dragover');
+            });
+            libModal.addEventListener('dragleave', (e) => {
+                if (!state.isGameGm) return;
+                if (!libModal.contains(e.relatedTarget)) {
+                    if (cue) cue.classList.remove('is-dragover');
+                }
+            });
+            libModal.addEventListener('drop', (e) => {
+                if (!state.isGameGm) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (cue) cue.classList.remove('is-dragover');
+                if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    handleUploadPdfs(e.dataTransfer.files);
+                }
+            });
+        }
+
+        const searchInput = $('pdf-library-search');
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                state.pdfLibrarySearch = e.target.value;
+                renderPdfLibraryModal();
+            });
+        }
+
+        const grid = $('pdf-library-grid');
+        if (grid) {
+            grid.addEventListener('click', (e) => {
+                const viewBtn = e.target.closest('[data-action-view-pdf]');
+                if (viewBtn) {
+                    const pdfId = Number(viewBtn.getAttribute('data-action-view-pdf'));
+                    const pdf = state.pdfs.find(p => p.id === pdfId);
+                    if (pdf) {
+                        openEmbeddedPdfReader(pdf);
+                    }
+                    return;
+                }
+
+                const shareBtn = e.target.closest('[data-action-toggle-share]');
+                if (shareBtn) {
+                    const pdfId = Number(shareBtn.getAttribute('data-action-toggle-share'));
+                    const pdf = state.pdfs.find(p => p.id === pdfId);
+                    if (pdf) {
+                        handleToggleSharePdf(pdfId, !pdf.is_shared);
+                    }
+                    return;
+                }
+
+                const delBtn = e.target.closest('[data-action-delete-pdf]');
+                if (delBtn) {
+                    const pdfId = Number(delBtn.getAttribute('data-action-delete-pdf'));
+                    handleDeletePdf(pdfId);
+                    return;
+                }
+            });
+        }
+
+        const btnCloseViewer = $('btn-close-pdf-viewer');
+        if (btnCloseViewer) btnCloseViewer.addEventListener('click', closeEmbeddedPdfReader);
+
+        const btnMaximize = $('btn-pdf-maximize');
+        if (btnMaximize) {
+            btnMaximize.addEventListener('click', () => {
+                const card = $('pdf-viewer-card');
+                if (card) {
+                    const isMax = card.classList.toggle('is-maximized');
+                    btnMaximize.textContent = isMax ? '❐' : '⛶';
+                }
+            });
+        }
     }
 
     async function sendChatCommand(messageText) {
@@ -3747,6 +5444,44 @@
             container.scrollTop = container.scrollHeight;
         }
     }
+
+    // Global user interaction listener to un-mute and unblock audio autoplay
+    function handleGlobalInteractionForAudio() {
+        state.userHasInteracted = true;
+        if (state.autoplayBlocked) {
+            state.autoplayBlocked = false;
+            updateMusicBarControlsUI();
+        }
+        applyLocalVolume();
+
+        if (state.ytPlayer && state.musicState && state.musicState.status === 'playing') {
+            try {
+                const isMuted = state.localMusicMuted || (state.playerMusicDisabled && !state.isGameGm);
+                if (!isMuted && typeof state.ytPlayer.unMute === 'function') {
+                    state.ytPlayer.unMute();
+                    if (typeof state.ytPlayer.setVolume === 'function') {
+                        state.ytPlayer.setVolume(Math.round(state.localMusicVolume || 70));
+                    }
+                }
+                if (typeof state.ytPlayer.getPlayerState === 'function') {
+                    const curState = state.ytPlayer.getPlayerState();
+                    if (curState !== 1 && curState !== 3) {
+                        state.ytPlayer.playVideo();
+                    }
+                }
+            } catch (e) {}
+        }
+        if (state.audioElement && state.musicState && state.musicState.status === 'playing') {
+            const isMuted = state.localMusicMuted || (state.playerMusicDisabled && !state.isGameGm);
+            state.audioElement.muted = isMuted;
+            if (state.audioElement.paused) {
+                state.audioElement.play().catch(() => {});
+            }
+        }
+    }
+    window.addEventListener('pointerdown', handleGlobalInteractionForAudio, { capture: true, passive: true });
+    window.addEventListener('click', handleGlobalInteractionForAudio, { capture: true, passive: true });
+    window.addEventListener('keydown', handleGlobalInteractionForAudio, { capture: true, passive: true });
 
     window.addEventListener('DOMContentLoaded', initApp);
 })();

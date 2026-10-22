@@ -73,6 +73,27 @@ function extractUploadedFileList(array $keys): array {
     return $files;
 }
 
+function getUploadErrorMessage(int $errorCode): string {
+    switch ($errorCode) {
+        case UPLOAD_ERR_INI_SIZE:
+            return 'File exceeds the server upload limit (upload_max_filesize: ' . ini_get('upload_max_filesize') . ')';
+        case UPLOAD_ERR_FORM_SIZE:
+            return 'File exceeds the maximum form file size';
+        case UPLOAD_ERR_PARTIAL:
+            return 'File upload was aborted or only partially uploaded';
+        case UPLOAD_ERR_NO_FILE:
+            return 'No file was uploaded';
+        case UPLOAD_ERR_NO_TMP_DIR:
+            return 'Missing temporary directory on the server';
+        case UPLOAD_ERR_CANT_WRITE:
+            return 'Server failed to write file to disk';
+        case UPLOAD_ERR_EXTENSION:
+            return 'A PHP extension stopped the file upload';
+        default:
+            return 'Upload error code ' . $errorCode;
+    }
+}
+
 function handlePreviewImageUpload(string $uploadsDir, string $fieldName = 'preview_image'): ?string {
     if (empty($_FILES[$fieldName]) || $_FILES[$fieldName]['error'] === UPLOAD_ERR_NO_FILE) {
         return null;
@@ -96,6 +117,79 @@ function handlePreviewImageUpload(string $uploadsDir, string $fieldName = 'previ
         throw new RuntimeException('Could not save cover image on server.');
     }
     return 'uploads/' . $safeFilename;
+}
+
+function generatePdfCover(string $pdfAbsPath, string $uploadsDir, string $coverBaseName): ?string {
+    if (!file_exists($pdfAbsPath)) {
+        return null;
+    }
+    $prefix = $uploadsDir . '/cover_' . $coverBaseName;
+
+    $pdftoppm = '/usr/bin/pdftoppm';
+    if (!file_exists($pdftoppm)) {
+        $pdftoppm = trim((string)@shell_exec('which pdftoppm'));
+    }
+
+    if ($pdftoppm && is_executable($pdftoppm)) {
+        $cmd = escapeshellcmd($pdftoppm) . ' -png -f 1 -l 1 -scale-to 400 ' . escapeshellarg($pdfAbsPath) . ' ' . escapeshellarg($prefix) . ' 2>&1';
+        exec($cmd, $output, $ret);
+        if ($ret === 0) {
+            $matches = glob($prefix . '-*.png');
+            if (!empty($matches)) {
+                $targetFile = $prefix . '.png';
+                if ($matches[0] !== $targetFile) {
+                    @rename($matches[0], $targetFile);
+                }
+                for ($i = 1; $i < count($matches); $i++) {
+                    @unlink($matches[$i]);
+                }
+                return 'uploads/' . basename($targetFile);
+            }
+        }
+    }
+
+    $convert = '/usr/bin/convert';
+    if (file_exists($convert)) {
+        $targetFile = $prefix . '.png';
+        $cmd = escapeshellcmd($convert) . ' -density 150 ' . escapeshellarg($pdfAbsPath . '[0]') . ' -resize 400x ' . escapeshellarg($targetFile) . ' 2>&1';
+        exec($cmd, $output, $ret);
+        if ($ret === 0 && file_exists($targetFile)) {
+            return 'uploads/' . basename($targetFile);
+        }
+    }
+
+    return null;
+}
+
+function ensurePdfCovers(Storage $storage, array $pdfs, string $uploadsDir): array {
+    $updated = [];
+    foreach ($pdfs as $pdf) {
+        if (empty($pdf['cover_image']) && !empty($pdf['filename'])) {
+            $absPath = __DIR__ . '/' . ltrim($pdf['filename'], '/\\');
+            if (file_exists($absPath)) {
+                $base = pathinfo($pdf['filename'], PATHINFO_FILENAME);
+                $cover = generatePdfCover($absPath, $uploadsDir, $base);
+                if ($cover) {
+                    $pdf = $storage->updatePdf($pdf['id'], ['cover_image' => $cover]) ?: $pdf;
+                }
+            }
+        }
+        $updated[] = $pdf;
+    }
+    return $updated;
+}
+
+// Detect when PHP completely dropped POST data due to post_max_size on file/form uploads
+$contentType = strtolower((string)($_SERVER['CONTENT_TYPE'] ?? ''));
+$isFormUpload = (str_contains($contentType, 'multipart/form-data') || str_contains($contentType, 'application/x-www-form-urlencoded'));
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isFormUpload && empty($_POST) && empty($_FILES) && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+    $postMax = ini_get('post_max_size') ?: 'unknown';
+    $contentLen = (int)$_SERVER['CONTENT_LENGTH'];
+    $contentMb = round($contentLen / 1048576, 1);
+    respond([
+        'ok' => false,
+        'error' => "The uploaded file or payload ({$contentMb} MB) exceeds the server limit (post_max_size is {$postMax})."
+    ], 413);
 }
 
 $action = $_GET['action'] ?? $_POST['action'] ?? '';
@@ -521,6 +615,10 @@ try {
                 'library_tokens' => $libraryTokens,
                 'messages' => $messages,
                 'participants' => $participants,
+                'music_state' => $game['music_state'] ?? [],
+                'playlists' => $storage->getPlaylists($gameId),
+                'pdfs' => $storage->getPdfs($gameId, $isGameGm),
+                'shared_pdf' => $game['shared_pdf'] ?? null,
             ]);
         }
 
@@ -1289,6 +1387,327 @@ try {
             respond([
                 'ok' => true,
                 'notes' => $storage->getNotes($gameId)
+            ]);
+        }
+
+        case 'get_playlists': {
+            $user = getCurrentUser($storage);
+            if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);
+
+            $gameId = (int)($_GET['game_id'] ?? $input['game_id'] ?? 0);
+            $game = $storage->getGameById($gameId);
+            if (!$game) respond(['ok' => false, 'error' => 'Game not found.'], 404);
+
+            $hasAccess = ($game['gm_id'] === $user['id']) || in_array($user['id'], $game['allowed_players'], true);
+            if (!$hasAccess) respond(['ok' => false, 'error' => 'Access denied.'], 403);
+
+            respond([
+                'ok' => true,
+                'playlists' => $storage->getPlaylists($gameId),
+                'music_state' => $game['music_state'] ?? [],
+            ]);
+        }
+
+        case 'save_playlist': {
+            $user = getCurrentUser($storage);
+            if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);
+
+            $gameId = (int)($input['game_id'] ?? 0);
+            $playlistId = (int)($input['id'] ?? $input['playlist_id'] ?? 0);
+            $name = trim((string)($input['name'] ?? ''));
+
+            $game = $storage->getGameById($gameId);
+            if (!$game) respond(['ok' => false, 'error' => 'Game not found.'], 404);
+            if ($game['gm_id'] !== $user['id']) {
+                respond(['ok' => false, 'error' => 'Only the Game Master can manage playlists.'], 403);
+            }
+
+            if ($name === '') {
+                $name = 'New Playlist';
+            }
+
+            $playlist = $storage->savePlaylist($gameId, $playlistId, $name);
+            respond([
+                'ok' => true,
+                'playlist' => $playlist,
+                'playlists' => $storage->getPlaylists($gameId)
+            ]);
+        }
+
+        case 'delete_playlist': {
+            $user = getCurrentUser($storage);
+            if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);
+
+            $gameId = (int)($input['game_id'] ?? 0);
+            $playlistId = (int)($input['id'] ?? $input['playlist_id'] ?? 0);
+
+            $game = $storage->getGameById($gameId);
+            if (!$game) respond(['ok' => false, 'error' => 'Game not found.'], 404);
+            if ($game['gm_id'] !== $user['id']) {
+                respond(['ok' => false, 'error' => 'Only the Game Master can delete playlists.'], 403);
+            }
+
+            $musicState = $game['music_state'] ?? [];
+            if ((int)($musicState['playlist_id'] ?? 0) === $playlistId) {
+                $storage->updateMusicState($gameId, [
+                    'status' => 'stopped',
+                    'playlist_id' => 0,
+                    'track_id' => '',
+                    'track_title' => '',
+                    'track_url' => '',
+                    'position' => 0
+                ]);
+            }
+
+            $storage->deletePlaylist($gameId, $playlistId);
+            respond([
+                'ok' => true,
+                'playlists' => $storage->getPlaylists($gameId)
+            ]);
+        }
+
+        case 'add_playlist_track': {
+            $user = getCurrentUser($storage);
+            if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);
+
+            $gameId = (int)($input['game_id'] ?? 0);
+            $playlistId = (int)($input['playlist_id'] ?? 0);
+            $title = trim((string)($input['title'] ?? ''));
+            $url = trim((string)($input['url'] ?? ''));
+
+            $game = $storage->getGameById($gameId);
+            if (!$game) respond(['ok' => false, 'error' => 'Game not found.'], 404);
+            if ($game['gm_id'] !== $user['id']) {
+                respond(['ok' => false, 'error' => 'Only the Game Master can add tracks.'], 403);
+            }
+
+            if ($url === '') {
+                respond(['ok' => false, 'error' => 'Please provide a valid URL for the track.'], 400);
+            }
+
+            $playlist = $storage->addTrackToPlaylist($gameId, $playlistId, $title, $url);
+            if (!$playlist) {
+                respond(['ok' => false, 'error' => 'Playlist not found.'], 404);
+            }
+
+            respond([
+                'ok' => true,
+                'playlist' => $playlist,
+                'playlists' => $storage->getPlaylists($gameId)
+            ]);
+        }
+
+        case 'delete_playlist_track': {
+            $user = getCurrentUser($storage);
+            if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);
+
+            $gameId = (int)($input['game_id'] ?? 0);
+            $playlistId = (int)($input['playlist_id'] ?? 0);
+            $trackId = (string)($input['track_id'] ?? '');
+
+            $game = $storage->getGameById($gameId);
+            if (!$game) respond(['ok' => false, 'error' => 'Game not found.'], 404);
+            if ($game['gm_id'] !== $user['id']) {
+                respond(['ok' => false, 'error' => 'Only the Game Master can delete tracks.'], 403);
+            }
+
+            $musicState = $game['music_state'] ?? [];
+            if (($musicState['track_id'] ?? '') === $trackId) {
+                $storage->updateMusicState($gameId, [
+                    'status' => 'stopped',
+                    'track_id' => '',
+                    'track_title' => '',
+                    'track_url' => '',
+                    'position' => 0
+                ]);
+            }
+
+            $playlist = $storage->deleteTrackFromPlaylist($gameId, $playlistId, $trackId);
+            respond([
+                'ok' => true,
+                'playlist' => $playlist,
+                'playlists' => $storage->getPlaylists($gameId)
+            ]);
+        }
+
+        case 'update_music_state': {
+            $user = getCurrentUser($storage);
+            if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);
+
+            $gameId = (int)($input['game_id'] ?? 0);
+            $game = $storage->getGameById($gameId);
+            if (!$game) respond(['ok' => false, 'error' => 'Game not found.'], 404);
+
+            if ($game['gm_id'] !== $user['id']) {
+                respond(['ok' => false, 'error' => 'Only the Game Master can control music playback.'], 403);
+            }
+
+            $fields = [];
+            if (isset($input['status'])) {
+                $status = (string)$input['status'];
+                if (in_array($status, ['playing', 'paused', 'stopped'], true)) {
+                    $fields['status'] = $status;
+                }
+            }
+            if (isset($input['playlist_id'])) {
+                $fields['playlist_id'] = (int)$input['playlist_id'];
+            }
+            if (isset($input['track_id'])) {
+                $fields['track_id'] = (string)$input['track_id'];
+            }
+            if (isset($input['track_title'])) {
+                $fields['track_title'] = (string)$input['track_title'];
+            }
+            if (isset($input['track_url'])) {
+                $fields['track_url'] = (string)$input['track_url'];
+            }
+            if (isset($input['source_type'])) {
+                $fields['source_type'] = in_array($input['source_type'], ['youtube', 'audio'], true) ? $input['source_type'] : 'audio';
+            }
+            if (isset($input['position'])) {
+                $fields['position'] = max(0.0, (float)$input['position']);
+            }
+            if (isset($input['repeat_mode'])) {
+                $repeatMode = (string)$input['repeat_mode'];
+                if (in_array($repeatMode, ['playlist', 'track', 'none'], true)) {
+                    $fields['repeat_mode'] = $repeatMode;
+                }
+            }
+
+            $updated = $storage->updateMusicState($gameId, $fields);
+            respond(['ok' => true, 'music_state' => $updated]);
+        }
+
+        case 'get_pdfs': {
+            $user = getCurrentUser($storage);
+            if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);
+
+            $gameId = (int)($_GET['game_id'] ?? $input['game_id'] ?? 0);
+            $game = $storage->getGameById($gameId);
+            if (!$game) respond(['ok' => false, 'error' => 'Game not found.'], 404);
+
+            $isGm = ($game['gm_id'] === $user['id']);
+            $hasAccess = $isGm || in_array($user['id'], $game['allowed_players'], true);
+            if (!$hasAccess) respond(['ok' => false, 'error' => 'Access denied.'], 403);
+
+            $rawPdfs = $storage->getPdfs($gameId, $isGm);
+            $pdfsWithCovers = ensurePdfCovers($storage, $rawPdfs, $uploadsDir);
+
+            respond([
+                'ok' => true,
+                'pdfs' => $pdfsWithCovers,
+                'shared_pdf' => $game['shared_pdf'] ?? null,
+                'is_game_gm' => $isGm
+            ]);
+        }
+
+        case 'upload_pdf': {
+            $user = getCurrentUser($storage);
+            if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);
+
+            $gameId = (int)($_POST['game_id'] ?? 0);
+            $game = $storage->getGameById($gameId);
+            if (!$game) respond(['ok' => false, 'error' => 'Game not found.'], 404);
+
+            if ($game['gm_id'] !== $user['id']) {
+                respond(['ok' => false, 'error' => 'Only the Game Master can upload PDFs.'], 403);
+            }
+
+            $uploadedFiles = extractUploadedFileList(['pdfs', 'pdf', 'file']);
+            if (empty($uploadedFiles)) {
+                respond(['ok' => false, 'error' => 'No PDF files were uploaded.'], 400);
+            }
+
+            $created = [];
+            $skipped = [];
+
+            foreach ($uploadedFiles as $file) {
+                if ($file['error'] !== UPLOAD_ERR_OK) {
+                    $skipped[] = ($file['name'] ?? 'file') . ' (' . getUploadErrorMessage((int)$file['error']) . ')';
+                    continue;
+                }
+                $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+                if ($ext !== 'pdf') {
+                    $skipped[] = $file['name'] . ' (Only .pdf files are supported)';
+                    continue;
+                }
+
+                $cleanBase = preg_replace('/[^a-zA-Z0-9_\-\.]/', '_', pathinfo($file['name'], PATHINFO_FILENAME));
+                $safeName = 'pdf_' . $gameId . '_' . bin2hex(random_bytes(6)) . '_' . substr($cleanBase, 0, 40) . '.pdf';
+                $targetPath = $uploadsDir . '/' . $safeName;
+
+                if (!move_uploaded_file($file['tmp_name'], $targetPath)) {
+                    $skipped[] = $file['name'] . ' (Could not save file to disk)';
+                    continue;
+                }
+
+                $relPath = 'uploads/' . $safeName;
+                $title = pathinfo($file['name'], PATHINFO_FILENAME);
+                $filesize = filesize($targetPath) ?: 0;
+                $isShared = isset($_POST['is_shared']) ? (int)$_POST['is_shared'] : 0;
+
+                $coverRel = generatePdfCover($targetPath, $uploadsDir, pathinfo($safeName, PATHINFO_FILENAME));
+
+                $newPdf = $storage->savePdf($gameId, $title, $relPath, $filesize, $isShared, $coverRel);
+                $created[] = $newPdf;
+            }
+
+            respond([
+                'ok' => true,
+                'created' => $created,
+                'skipped' => $skipped,
+                'pdfs' => $storage->getPdfs($gameId, true)
+            ]);
+        }
+
+        case 'delete_pdf': {
+            $user = getCurrentUser($storage);
+            if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);
+
+            $gameId = (int)($input['game_id'] ?? 0);
+            $pdfId = (int)($input['pdf_id'] ?? 0);
+
+            $game = $storage->getGameById($gameId);
+            if (!$game) respond(['ok' => false, 'error' => 'Game not found.'], 404);
+
+            if ($game['gm_id'] !== $user['id']) {
+                respond(['ok' => false, 'error' => 'Only the Game Master can delete PDFs.'], 403);
+            }
+
+            $storage->deletePdf($pdfId);
+
+            respond([
+                'ok' => true,
+                'pdfs' => $storage->getPdfs($gameId, true)
+            ]);
+        }
+
+        case 'share_pdf': {
+            $user = getCurrentUser($storage);
+            if (!$user) respond(['ok' => false, 'error' => 'Not logged in.'], 401);
+
+            $gameId = (int)($input['game_id'] ?? 0);
+            $pdfId = (int)($input['pdf_id'] ?? 0);
+
+            $game = $storage->getGameById($gameId);
+            if (!$game) respond(['ok' => false, 'error' => 'Game not found.'], 404);
+
+            if ($game['gm_id'] !== $user['id']) {
+                respond(['ok' => false, 'error' => 'Only the Game Master can share PDFs.'], 403);
+            }
+
+            $pdf = $storage->getPdfById($pdfId);
+            if (!$pdf || $pdf['game_id'] !== $gameId) {
+                respond(['ok' => false, 'error' => 'PDF not found.'], 404);
+            }
+
+            $isShared = isset($input['is_shared']) ? ((int)$input['is_shared'] ? 1 : 0) : $pdf['is_shared'];
+            $updatedPdf = $storage->updatePdf($pdfId, ['is_shared' => $isShared]);
+
+            respond([
+                'ok' => true,
+                'pdf' => $updatedPdf,
+                'pdfs' => $storage->getPdfs($gameId, true)
             ]);
         }
 

@@ -93,6 +93,7 @@ class Storage {
                 'board_images' => [],
                 'board_tokens' => [],
                 'messages' => [],
+                'playlists' => [],
             ]);
         }
     }
@@ -187,6 +188,15 @@ class Storage {
                 updated_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS playlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                tracks TEXT NOT NULL DEFAULT '[]',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS password_resets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -195,10 +205,27 @@ class Storage {
                 used INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS pdfs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                cover_image TEXT NULL DEFAULT NULL,
+                filesize INTEGER NOT NULL DEFAULT 0,
+                is_shared INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
         ");
 
         // Ensure new columns exist if upgrading from an earlier schema
         try {
+            $pdfCols = $this->pdo->query("PRAGMA table_info(pdfs)")->fetchAll();
+            $pdfColNames = array_column($pdfCols, 'name');
+            if (!in_array('cover_image', $pdfColNames, true)) {
+                $this->pdo->exec("ALTER TABLE pdfs ADD COLUMN cover_image TEXT NULL DEFAULT NULL");
+            }
             $cols = $this->pdo->query("PRAGMA table_info(board_images)")->fetchAll();
             $colNames = array_column($cols, 'name');
             if (!in_array('on_board', $colNames, true)) {
@@ -218,6 +245,12 @@ class Storage {
             }
             if (!in_array('default_tokens_seeded', $gameColNames, true)) {
                 $this->pdo->exec("ALTER TABLE games ADD COLUMN default_tokens_seeded INTEGER NOT NULL DEFAULT 0");
+            }
+            if (!in_array('music_state', $gameColNames, true)) {
+                $this->pdo->exec("ALTER TABLE games ADD COLUMN music_state TEXT NOT NULL DEFAULT '{}'");
+            }
+            if (!in_array('shared_pdf', $gameColNames, true)) {
+                $this->pdo->exec("ALTER TABLE games ADD COLUMN shared_pdf TEXT NULL DEFAULT NULL");
             }
 
             $tabCols = $this->pdo->query("PRAGMA table_info(map_tabs)")->fetchAll();
@@ -284,6 +317,12 @@ class Storage {
                 $stmt = $this->pdo->prepare("INSERT OR IGNORE INTO messages (id, game_id, sender_id, sender_name, sender_role, type, recipient_id, recipient_name, is_hidden_roll, content, roll_data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([$m['id'], $m['game_id'], $m['sender_id'], $m['sender_name'], $m['sender_role'] ?? 'player', $m['type'] ?? 'chat', $m['recipient_id'] ?? null, $m['recipient_name'] ?? null, !empty($m['is_hidden_roll']) ? 1 : 0, $m['content'], is_array($m['roll_data'] ?? null) ? json_encode($m['roll_data']) : ($m['roll_data'] ?? null), $m['created_at']]);
             }
+            if (!empty($data['playlists'])) {
+                foreach ($data['playlists'] as $p) {
+                    $stmt = $this->pdo->prepare("INSERT OR IGNORE INTO playlists (id, game_id, name, tracks, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)");
+                    $stmt->execute([$p['id'], $p['game_id'], $p['name'], is_array($p['tracks'] ?? null) ? json_encode($p['tracks']) : ($p['tracks'] ?? '[]'), $p['created_at'] ?? time(), $p['updated_at'] ?? time()]);
+                }
+            }
             $this->pdo->commit();
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
@@ -294,11 +333,11 @@ class Storage {
 
     private function readJsonData(): array {
         if (!file_exists($this->jsonFile)) {
-            return ['users' => [], 'games' => [], 'map_tabs' => [], 'board_images' => [], 'board_tokens' => [], 'messages' => [], 'notes' => []];
+            return ['users' => [], 'games' => [], 'map_tabs' => [], 'board_images' => [], 'board_tokens' => [], 'messages' => [], 'notes' => [], 'playlists' => []];
         }
         $fp = fopen($this->jsonFile, 'r');
         if (!$fp) {
-            return ['users' => [], 'games' => [], 'map_tabs' => [], 'board_images' => [], 'board_tokens' => [], 'messages' => [], 'notes' => []];
+            return ['users' => [], 'games' => [], 'map_tabs' => [], 'board_images' => [], 'board_tokens' => [], 'messages' => [], 'notes' => [], 'playlists' => []];
         }
         flock($fp, LOCK_SH);
         $raw = stream_get_contents($fp);
@@ -306,7 +345,7 @@ class Storage {
         fclose($fp);
         $decoded = json_decode($raw ?: '', true);
         if (!is_array($decoded)) {
-            return ['users' => [], 'games' => [], 'map_tabs' => [], 'board_images' => [], 'board_tokens' => [], 'messages' => [], 'notes' => []];
+            return ['users' => [], 'games' => [], 'map_tabs' => [], 'board_images' => [], 'board_tokens' => [], 'messages' => [], 'notes' => [], 'playlists' => []];
         }
         if (!isset($decoded['map_tabs'])) {
             $decoded['map_tabs'] = [];
@@ -316,6 +355,9 @@ class Storage {
         }
         if (!isset($decoded['notes'])) {
             $decoded['notes'] = [];
+        }
+        if (!isset($decoded['playlists'])) {
+            $decoded['playlists'] = [];
         }
         return $decoded;
     }
@@ -703,6 +745,16 @@ class Storage {
         $game['allowed_players'] = array_values(array_map('intval', $game['allowed_players']));
         $gm = $this->getUserById($game['gm_id']);
         $game['gm_name'] = $gm ? $gm['username'] : 'Unknown GM';
+        if (isset($game['music_state']) && is_string($game['music_state'])) {
+            $game['music_state'] = json_decode($game['music_state'], true) ?: [];
+        } elseif (!isset($game['music_state']) || !is_array($game['music_state'])) {
+            $game['music_state'] = [];
+        }
+        if (isset($game['shared_pdf']) && is_string($game['shared_pdf'])) {
+            $game['shared_pdf'] = json_decode($game['shared_pdf'], true) ?: null;
+        } elseif (!isset($game['shared_pdf']) || !is_array($game['shared_pdf'])) {
+            $game['shared_pdf'] = null;
+        }
         return $game;
     }
 
@@ -2022,5 +2074,313 @@ class Storage {
             return true;
         }
         return false;
+    }
+
+    public function getPlaylists(int $gameId): array {
+        $playlists = [];
+        if ($this->pdo) {
+            $stmt = $this->pdo->prepare("SELECT * FROM playlists WHERE game_id = ? ORDER BY id ASC");
+            $stmt->execute([$gameId]);
+            foreach ($stmt->fetchAll() as $row) {
+                $playlists[] = $this->normalizePlaylist($row);
+            }
+        } else {
+            $data = $this->readJsonData();
+            if (isset($data['playlists'])) {
+                foreach ($data['playlists'] as $p) {
+                    if ((int)$p['game_id'] === $gameId) {
+                        $playlists[] = $this->normalizePlaylist($p);
+                    }
+                }
+            }
+            usort($playlists, fn($a, $b) => $a['id'] <=> $b['id']);
+        }
+        return $playlists;
+    }
+
+    public function getPlaylistById(int $playlistId): ?array {
+        if ($this->pdo) {
+            $stmt = $this->pdo->prepare("SELECT * FROM playlists WHERE id = ?");
+            $stmt->execute([$playlistId]);
+            $row = $stmt->fetch();
+            return $row ? $this->normalizePlaylist($row) : null;
+        }
+        $data = $this->readJsonData();
+        if (isset($data['playlists'])) {
+            foreach ($data['playlists'] as $p) {
+                if ((int)$p['id'] === $playlistId) {
+                    return $this->normalizePlaylist($p);
+                }
+            }
+        }
+        return null;
+    }
+
+    public function savePlaylist(int $gameId, int $playlistId, string $name, ?array $tracks = null): array {
+        $name = trim($name) !== '' ? trim($name) : 'Untitled Playlist';
+        $now = time();
+
+        if ($this->pdo) {
+            if ($playlistId > 0) {
+                if ($tracks !== null) {
+                    $stmt = $this->pdo->prepare("UPDATE playlists SET name = ?, tracks = ?, updated_at = ? WHERE id = ? AND game_id = ?");
+                    $stmt->execute([$name, json_encode(array_values($tracks)), $now, $playlistId, $gameId]);
+                } else {
+                    $stmt = $this->pdo->prepare("UPDATE playlists SET name = ?, updated_at = ? WHERE id = ? AND game_id = ?");
+                    $stmt->execute([$name, $now, $playlistId, $gameId]);
+                }
+                return $this->getPlaylistById($playlistId) ?? [
+                    'id' => $playlistId, 'game_id' => $gameId, 'name' => $name, 'tracks' => $tracks ?? [], 'created_at' => $now, 'updated_at' => $now
+                ];
+            }
+
+            $stmt = $this->pdo->prepare("INSERT INTO playlists (game_id, name, tracks, created_at, updated_at) VALUES (?, ?, ?, ?, ?)");
+            $stmt->execute([$gameId, $name, json_encode($tracks ?? []), $now, $now]);
+            $newId = (int)$this->pdo->lastInsertId();
+            return $this->getPlaylistById($newId);
+        }
+
+        $data = $this->readJsonData();
+        if (!isset($data['playlists'])) {
+            $data['playlists'] = [];
+        }
+
+        if ($playlistId > 0) {
+            foreach ($data['playlists'] as &$p) {
+                if ((int)$p['id'] === $playlistId && (int)$p['game_id'] === $gameId) {
+                    $p['name'] = $name;
+                    if ($tracks !== null) {
+                        $p['tracks'] = array_values($tracks);
+                    }
+                    $p['updated_at'] = $now;
+                    $this->writeJsonData($data);
+                    return $this->normalizePlaylist($p);
+                }
+            }
+        }
+
+        $nextId = empty($data['playlists']) ? 1 : (max(array_column($data['playlists'], 'id')) + 1);
+        $playlist = [
+            'id' => $nextId,
+            'game_id' => $gameId,
+            'name' => $name,
+            'tracks' => $tracks ?? [],
+            'created_at' => $now,
+            'updated_at' => $now,
+        ];
+        $data['playlists'][] = $playlist;
+        $this->writeJsonData($data);
+        return $this->normalizePlaylist($playlist);
+    }
+
+    public function deletePlaylist(int $gameId, int $playlistId): bool {
+        if ($this->pdo) {
+            $stmt = $this->pdo->prepare("DELETE FROM playlists WHERE id = ? AND game_id = ?");
+            $stmt->execute([$playlistId, $gameId]);
+            return $stmt->rowCount() > 0;
+        }
+        $data = $this->readJsonData();
+        if (!isset($data['playlists'])) return false;
+        $before = count($data['playlists']);
+        $data['playlists'] = array_values(array_filter($data['playlists'], fn($p) => !((int)$p['id'] === $playlistId && (int)$p['game_id'] === $gameId)));
+        if (count($data['playlists']) !== $before) {
+            $this->writeJsonData($data);
+            return true;
+        }
+        return false;
+    }
+
+    public function addTrackToPlaylist(int $gameId, int $playlistId, string $title, string $url): ?array {
+        $playlist = $this->getPlaylistById($playlistId);
+        if (!$playlist || $playlist['game_id'] !== $gameId) {
+            return null;
+        }
+        $tracks = $playlist['tracks'] ?? [];
+        $url = trim($url);
+        if ($url === '') {
+            throw new InvalidArgumentException('Track URL cannot be empty.');
+        }
+
+        // Detect YouTube
+        $isYouTube = (bool)preg_match('/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i', $url);
+        $sourceType = $isYouTube ? 'youtube' : 'audio';
+
+        $title = trim($title);
+        if ($title === '') {
+            if ($isYouTube) {
+                preg_match('/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i', $url, $m);
+                $title = 'YouTube Track (' . ($m[1] ?? 'Video') . ')';
+            } else {
+                $base = basename(parse_url($url, PHP_URL_PATH) ?? '');
+                $title = $base !== '' ? urldecode(pathinfo($base, PATHINFO_FILENAME)) : 'Web Audio Track';
+            }
+        }
+
+        $trackId = 'trk_' . bin2hex(random_bytes(6));
+        $newTrack = [
+            'id' => $trackId,
+            'title' => $title,
+            'url' => $url,
+            'source_type' => $sourceType,
+            'created_at' => time(),
+        ];
+        $tracks[] = $newTrack;
+        return $this->savePlaylist($gameId, $playlistId, $playlist['name'], $tracks);
+    }
+
+    public function deleteTrackFromPlaylist(int $gameId, int $playlistId, string $trackId): ?array {
+        $playlist = $this->getPlaylistById($playlistId);
+        if (!$playlist || $playlist['game_id'] !== $gameId) {
+            return null;
+        }
+        $tracks = array_values(array_filter($playlist['tracks'] ?? [], fn($t) => ($t['id'] ?? '') !== $trackId));
+        return $this->savePlaylist($gameId, $playlistId, $playlist['name'], $tracks);
+    }
+
+    public function updateMusicState(int $gameId, array $state): array {
+        $current = $this->getGameById($gameId);
+        if (!$current) {
+            throw new RuntimeException('Game not found.');
+        }
+        $merged = is_array($current['music_state']) ? $current['music_state'] : [];
+        foreach ($state as $k => $v) {
+            $merged[$k] = $v;
+        }
+        $merged['updated_at'] = microtime(true);
+
+        if ($this->pdo) {
+            $stmt = $this->pdo->prepare("UPDATE games SET music_state = ? WHERE id = ?");
+            $stmt->execute([json_encode($merged), $gameId]);
+        } else {
+            $data = $this->readJsonData();
+            foreach ($data['games'] as &$g) {
+                if ((int)$g['id'] === $gameId) {
+                    $g['music_state'] = $merged;
+                    break;
+                }
+            }
+            $this->writeJsonData($data);
+        }
+        return $merged;
+    }
+
+    private function normalizePlaylist(array $row): array {
+        $tracks = $row['tracks'] ?? '[]';
+        if (is_string($tracks)) {
+            $tracks = json_decode($tracks, true) ?: [];
+        }
+        if (!is_array($tracks)) {
+            $tracks = [];
+        }
+        return [
+            'id' => (int)$row['id'],
+            'game_id' => (int)$row['game_id'],
+            'name' => (string)($row['name'] ?? 'Untitled Playlist'),
+            'tracks' => array_values($tracks),
+            'created_at' => (int)($row['created_at'] ?? time()),
+            'updated_at' => (int)($row['updated_at'] ?? time()),
+        ];
+    }
+
+    public function getPdfs(int $gameId, bool $isGm = false): array {
+        if ($this->pdo) {
+            if ($isGm) {
+                $stmt = $this->pdo->prepare("SELECT * FROM pdfs WHERE game_id = ? ORDER BY created_at DESC");
+                $stmt->execute([$gameId]);
+            } else {
+                $stmt = $this->pdo->prepare("SELECT * FROM pdfs WHERE game_id = ? AND is_shared = 1 ORDER BY created_at DESC");
+                $stmt->execute([$gameId]);
+            }
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            return array_map([$this, 'normalizePdf'], $rows);
+        }
+        return [];
+    }
+
+    public function getPdfById(int $pdfId): ?array {
+        if ($this->pdo) {
+            $stmt = $this->pdo->prepare("SELECT * FROM pdfs WHERE id = ?");
+            $stmt->execute([$pdfId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $row ? $this->normalizePdf($row) : null;
+        }
+        return null;
+    }
+
+    public function savePdf(int $gameId, string $title, string $filename, int $filesize, int $isShared = 0, ?string $coverImage = null): array {
+        $now = time();
+        $stmt = $this->pdo->prepare("
+            INSERT INTO pdfs (game_id, title, filename, cover_image, filesize, is_shared, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->execute([$gameId, $title, $filename, $coverImage, $filesize, $isShared, $now, $now]);
+        $id = (int)$this->pdo->lastInsertId();
+        return $this->getPdfById($id);
+    }
+
+    public function updatePdf(int $pdfId, array $fields): ?array {
+        $pdf = $this->getPdfById($pdfId);
+        if (!$pdf) return null;
+
+        $allowed = ['title', 'is_shared', 'cover_image'];
+        $sets = [];
+        $params = [];
+        foreach ($fields as $k => $v) {
+            if (in_array($k, $allowed, true)) {
+                $sets[] = "$k = ?";
+                $params[] = $v;
+            }
+        }
+        if (empty($sets)) return $pdf;
+
+        $sets[] = "updated_at = ?";
+        $params[] = time();
+        $params[] = $pdfId;
+
+        $sql = "UPDATE pdfs SET " . implode(', ', $sets) . " WHERE id = ?";
+        $this->pdo->prepare($sql)->execute($params);
+        return $this->getPdfById($pdfId);
+    }
+
+    public function deletePdf(int $pdfId): bool {
+        $pdf = $this->getPdfById($pdfId);
+        if (!$pdf) return false;
+
+        if (!empty($pdf['filename'])) {
+            $filePath = __DIR__ . '/../' . ltrim($pdf['filename'], '/\\');
+            if (file_exists($filePath)) {
+                @unlink($filePath);
+            }
+        }
+        if (!empty($pdf['cover_image'])) {
+            $coverPath = __DIR__ . '/../' . ltrim($pdf['cover_image'], '/\\');
+            if (file_exists($coverPath)) {
+                @unlink($coverPath);
+            }
+        }
+
+        $stmt = $this->pdo->prepare("DELETE FROM pdfs WHERE id = ?");
+        return $stmt->execute([$pdfId]);
+    }
+
+    public function updateSharedPdf(int $gameId, ?array $sharedPdf): ?array {
+        $json = $sharedPdf !== null ? json_encode($sharedPdf) : null;
+        $stmt = $this->pdo->prepare("UPDATE games SET shared_pdf = ? WHERE id = ?");
+        $stmt->execute([$json, $gameId]);
+        return $sharedPdf;
+    }
+
+    private function normalizePdf(array $row): array {
+        return [
+            'id' => (int)$row['id'],
+            'game_id' => (int)$row['game_id'],
+            'title' => (string)($row['title'] ?? 'Document.pdf'),
+            'filename' => (string)($row['filename'] ?? ''),
+            'cover_image' => !empty($row['cover_image']) ? (string)$row['cover_image'] : null,
+            'filesize' => (int)($row['filesize'] ?? 0),
+            'is_shared' => (int)($row['is_shared'] ?? 1),
+            'created_at' => (int)($row['created_at'] ?? time()),
+            'updated_at' => (int)($row['updated_at'] ?? time()),
+        ];
     }
 }

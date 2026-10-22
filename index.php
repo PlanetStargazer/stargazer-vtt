@@ -260,44 +260,110 @@ session_start();
     <section id="view-vtt" class="vtt-layout hidden">
         <header class="top-navbar">
             <div class="nav-brand">
-                <button type="button" id="btn-back-lobby" class="btn btn-secondary btn-sm">&larr; Lobby</button>
+                <button type="button" id="btn-back-lobby" class="btn nav-header-btn" title="Return to Lobby">
+                    <span class="nav-btn-icon">🚪</span>
+                </button>
                 <span id="vtt-game-title">Campaign</span>
                 <span id="vtt-role-badge" class="badge badge-player">Player</span>
             </div>
+
+            <!-- Top Navbar Music Player Bar -->
+            <div id="vtt-music-bar" class="vtt-music-bar">
+                <div class="music-bar-info" id="music-bar-info" title="Music Player">
+                    <span id="music-indicator-icon" class="music-indicator-icon">🎵</span>
+                    <div class="music-info-text">
+                        <span id="music-track-title" class="music-track-title">No music playing</span>
+                        <span id="music-track-playlist" class="music-track-playlist"></span>
+                    </div>
+                </div>
+
+                <!-- GM-Only Playback Controls -->
+                <div id="music-gm-controls" class="music-ctrl-group gm-only-control hidden">
+                    <button type="button" id="btn-music-prev" class="music-icon-btn" title="Previous Track (GM)">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+                    </button>
+                    <button type="button" id="btn-music-playpause" class="music-icon-btn" title="Play / Pause (GM)">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                    </button>
+                    <button type="button" id="btn-music-next" class="music-icon-btn" title="Next Track (GM)">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                    </button>
+                    <button type="button" id="btn-music-repeat" class="music-icon-btn" title="Repeat Mode: Playlist (GM)">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+                    </button>
+                </div>
+
+                <!-- Local Audio & Volume Controls (Accessible to both GM and Players) -->
+                <div class="music-volume-group">
+                    <button type="button" id="btn-music-mute" class="music-icon-btn" title="Local Mute (Does not affect others)">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                    </button>
+                    <input type="range" id="music-volume-slider" class="music-volume-slider" min="0" max="100" value="70" title="Local Volume">
+                </div>
+
+                <!-- Player-Only Disable Control -->
+                <div id="music-player-controls" class="music-ctrl-group player-only-control hidden">
+                    <button type="button" id="btn-player-disable-music" class="btn btn-secondary btn-xs" title="Disable or enable music playback completely">Music: ON</button>
+                </div>
+
+                <!-- Browser Autoplay Unlock Notice -->
+                <button type="button" id="btn-music-unlock" class="btn btn-warning btn-xs hidden" title="Click to allow audio playback in your browser">🔊 Click to Unmute</button>
+            </div>
+
             <div class="nav-user-controls">
-                <button type="button" id="btn-hide-ui" class="btn btn-secondary btn-sm hidden" title="Maximize map view">⛶ Hide UI</button>
-                <button type="button" id="btn-clear-dice" class="btn btn-secondary btn-sm" title="Clear 3D dice from screen">Clear 3D Dice</button>
-                <button type="button" class="btn btn-secondary btn-sm" data-open-manual="1">📖 Manual</button>
+                <button type="button" id="btn-nav-pdf-library" class="btn nav-header-btn" title="PDF Library (Rulebooks &amp; Handouts)">
+                    <span class="nav-btn-icon">📖</span>
+                    <span id="pdf-nav-count-badge" class="nav-badge">0</span>
+                </button>
+                <button type="button" id="btn-hide-ui" class="btn nav-header-btn hidden" title="Maximize Map View / Hide UI">
+                    <span class="nav-btn-icon">⛶</span>
+                </button>
+                <button type="button" id="btn-clear-dice" class="btn nav-header-btn" title="Clear 3D Dice from Screen">
+                    <span class="nav-btn-icon">🎲</span>
+                </button>
+                <button type="button" class="btn nav-header-btn" data-open-manual="1" title="User Manual &amp; Documentation">
+                    <span class="nav-btn-icon">❓</span>
+                </button>
             </div>
         </header>
 
         <div class="vtt-main">
             <!-- Show UI Button (Appears when mouse/touch enters any of the 4 corners while UI is hidden) -->
-            <button type="button" id="btn-show-ui" class="btn btn-primary btn-sm show-ui-corner-btn hidden">
-                ⛶ Show UI
+            <button type="button" id="btn-show-ui" class="btn nav-header-btn show-ui-corner-btn hidden" title="Show UI">
+                <span class="nav-btn-icon">⛶</span>
             </button>
 
             <!-- Floating GM Controls on the Tabletop -->
             <div id="vtt-gm-hud" class="tabletop-hud hidden">
                 <input type="file" id="gm-image-file-input" accept=".png,.jpg,.jpeg,.gif,.webp,.svg" multiple class="hidden">
                 <input type="file" id="gm-token-file-input" accept=".png,.jpg,.jpeg,.gif,.webp,.svg" multiple class="hidden">
-                <button type="button" id="btn-open-library" class="btn btn-primary btn-sm">
-                    🗂️ Image Library (<span id="library-count-badge">0</span>)
+                <button type="button" id="btn-open-library" class="btn btn-secondary hud-icon-btn" title="Image Library">
+                    <span class="hud-icon">🗂️</span>
+                    <span id="library-count-badge" class="hud-badge">0</span>
                 </button>
-                <button type="button" id="btn-open-token-library" class="btn btn-primary btn-sm">
-                    ♟️ Token Library (<span id="token-library-count-badge">0</span>)
+                <button type="button" id="btn-open-token-library" class="btn btn-secondary hud-icon-btn" title="Token Library">
+                    <span class="hud-icon">♟️</span>
+                    <span id="token-library-count-badge" class="hud-badge">0</span>
                 </button>
-                <button type="button" id="btn-open-notes-library" class="btn btn-secondary btn-sm" title="GM Notes Library">
-                    📝 Notes
+                <button type="button" id="btn-open-notes-library" class="btn btn-secondary hud-icon-btn" title="GM Notes">
+                    <span class="hud-icon">📝</span>
                 </button>
-                <button type="button" id="btn-open-grid-settings" class="btn btn-secondary btn-sm" title="Map Tab, Grid &amp; Background Settings">
-                    🗺️ Map &amp; Grid Settings
+                <button type="button" id="btn-open-music-library" class="btn btn-secondary hud-icon-btn" title="Music &amp; Playlists">
+                    <span class="hud-icon">🎵</span>
+                    <span id="playlist-count-badge" class="hud-badge">0</span>
                 </button>
-                <button type="button" id="btn-toggle-openrolls" class="btn btn-secondary btn-sm">
-                    🔒 GM Rolls: HIDDEN
+                <button type="button" id="btn-open-pdf-library" class="btn btn-secondary hud-icon-btn" title="PDF Library">
+                    <span class="hud-icon">📖</span>
+                    <span id="pdf-count-badge" class="hud-badge">0</span>
                 </button>
-                <button type="button" id="btn-open-player-tab" class="btn btn-secondary btn-sm" title="Open the Player View of this game in a second browser tab">
-                    🖥️ Open Player View (New Tab)
+                <button type="button" id="btn-open-grid-settings" class="btn btn-secondary hud-icon-btn" title="Map &amp; Grid Settings">
+                    <span class="hud-icon">🗺️</span>
+                </button>
+                <button type="button" id="btn-toggle-openrolls" class="btn btn-secondary hud-icon-btn" title="GM Rolls: HIDDEN (Click to toggle)">
+                    <span class="hud-icon">🔒</span>
+                </button>
+                <button type="button" id="btn-open-player-tab" class="btn btn-secondary hud-icon-btn" title="Open Player View (New Tab)">
+                    <span class="hud-icon">🖥️</span>
                 </button>
             </div>
 
@@ -474,12 +540,33 @@ session_start();
                                 <button type="button" id="btn-remove-grid-bg" class="btn btn-danger btn-sm">Remove Background</button>
                             </div>
 
-                            <div style="display: flex; gap: 10px; align-items: center;">
+                            <!-- Drag & Drop Zone + Pick from Library / Upload from Disk -->
+                            <div id="grid-bg-dropzone" class="map-bg-dropzone">
+                                <div class="map-bg-dropzone-inner">
+                                    <span style="font-size: 1.6rem; line-height: 1;">📥</span>
+                                    <span style="font-size: 0.82rem; font-weight: 600; color: var(--text-main);">Drag &amp; drop battlemap file here</span>
+                                    <span style="font-size: 0.74rem; color: var(--text-muted); margin-bottom: 6px;">or select using the buttons below</span>
+                                    <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+                                        <button type="button" id="btn-choose-grid-bg" class="btn btn-secondary btn-sm">
+                                            📁 Choose From Disk...
+                                        </button>
+                                        <button type="button" id="btn-pick-library-bg" class="btn btn-primary btn-sm">
+                                            🗂️ Pick from Image Library...
+                                        </button>
+                                    </div>
+                                </div>
                                 <input type="file" id="grid-bg-file-input" accept=".png,.jpg,.jpeg,.gif,.webp,.svg" class="hidden">
-                                <button type="button" id="btn-choose-grid-bg" class="btn btn-secondary btn-sm">
-                                    📁 Choose Map Image File...
-                                </button>
-                                <span id="grid-bg-chosen-name" style="font-size: 0.8rem; color: var(--text-muted); font-style: italic;">No new file chosen</span>
+                                <input type="hidden" id="grid-bg-library-selected" value="">
+                            </div>
+                            <div id="grid-bg-chosen-name" style="font-size: 0.8rem; color: var(--text-muted); font-style: italic; margin-top: 6px;">No new file chosen</div>
+
+                            <!-- Library Picker Drawer -->
+                            <div id="grid-bg-library-picker" class="grid-bg-library-picker hidden">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-color);">
+                                    <span style="font-size: 0.82rem; font-weight: 600; color: var(--accent-gold);">Click an image to set as background:</span>
+                                    <button type="button" id="btn-close-bg-library-picker" class="btn btn-secondary btn-xs">✕ Close</button>
+                                </div>
+                                <div id="grid-bg-library-items" class="grid-bg-library-items"></div>
                             </div>
                         </div>
 
@@ -537,6 +624,138 @@ session_start();
                 </div>
             </div>
 
+            <!-- GM Music & Playlists Library Modal -->
+            <div id="modal-music-library" class="modal-backdrop hidden">
+                <div class="modal-card music-modal-card">
+                    <div class="modal-header">
+                        <h3>🎵 Music &amp; Playlists Library</h3>
+                        <button type="button" id="btn-close-music-modal" class="btn btn-secondary btn-sm">✕</button>
+                    </div>
+                    <div class="music-container">
+                        <!-- Sidebar: Playlist List & Creation -->
+                        <div class="music-sidebar">
+                            <div class="music-sidebar-header">
+                                <input type="text" id="playlist-search-input" class="form-control form-control-sm" placeholder="🔍 Search playlists...">
+                                <button type="button" id="btn-new-playlist" class="btn btn-primary btn-sm">+ New Playlist</button>
+                            </div>
+                            <div id="playlists-list" class="playlists-list">
+                                <!-- Populated dynamically by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Main Area: Playlist Detail & Track Management -->
+                        <div class="music-detail-pane">
+                            <div id="music-empty-state" class="music-empty-state">
+                                <div style="font-size: 2.4rem; opacity: 0.4;">🎵</div>
+                                <p style="color: var(--text-muted); margin-top: 8px;">Select a playlist from the left or create a new playlist.</p>
+                            </div>
+                            <div id="music-playlist-content" class="music-playlist-content hidden">
+                                <!-- Playlist Top Bar: Name editing, Play Playlist button, Delete Playlist button -->
+                                <div class="music-playlist-topbar">
+                                    <div class="music-title-group">
+                                        <input type="text" id="playlist-name-input" class="form-control music-name-input" placeholder="Playlist Name..." required maxlength="80">
+                                        <button type="button" id="btn-save-playlist-name" class="btn btn-secondary btn-sm" title="Rename Playlist">Rename</button>
+                                    </div>
+                                    <div class="music-playlist-actions">
+                                        <button type="button" id="btn-play-entire-playlist" class="btn btn-success btn-sm" title="Start playing this playlist from the first track">▶ Play Playlist</button>
+                                        <button type="button" id="btn-delete-playlist" class="btn btn-danger btn-sm" title="Delete Playlist">🗑️ Delete</button>
+                                    </div>
+                                </div>
+
+                                <!-- Add Track Section -->
+                                <div class="music-add-track-section">
+                                    <div style="font-size: 0.85rem; font-weight: 600; color: var(--accent-gold); margin-bottom: 6px;">Add Track to Playlist</div>
+                                    <form id="form-add-track" class="music-add-track-form">
+                                        <input type="text" id="track-title-input" class="form-control form-control-sm" placeholder="Track Title (optional, e.g. Tavern Ambience)...">
+                                        <input type="url" id="track-url-input" class="form-control form-control-sm" placeholder="Music Link: YouTube (youtube.com / youtu.be) or Web Audio (.mp3, .ogg, .wav)..." required>
+                                        <button type="submit" id="btn-add-track" class="btn btn-primary btn-sm" style="flex-shrink: 0;">+ Add Track</button>
+                                    </form>
+                                    <div class="music-url-hint">
+                                        💡 Supports YouTube links (youtube.com, youtu.be) and direct links to web audio files (MP3, WAV, OGG, AAC).
+                                    </div>
+                                </div>
+
+                                <!-- Track List Section -->
+                                <div class="music-tracks-container">
+                                    <div class="music-tracks-header">
+                                        <span style="font-weight: 600; font-size: 0.85rem; color: var(--text-muted);">Tracks (<span id="current-playlist-track-count">0</span>)</span>
+                                        <div style="display: flex; align-items: center; gap: 8px;">
+                                            <span style="font-size: 0.75rem; color: var(--text-muted);">Click any track to play it for everyone</span>
+                                            <button type="button" id="btn-modal-repeat-toggle" class="btn btn-secondary btn-xs" title="Toggle Repeat Mode">🔁 Repeat: Playlist</button>
+                                        </div>
+                                    </div>
+                                    <div id="playlist-tracks-list" class="playlist-tracks-list">
+                                        <!-- Populated dynamically with track items -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Game PDF Library Modal -->
+            <div id="modal-pdf-library" class="modal-backdrop hidden">
+                <div class="modal-card pdf-library-modal-card">
+                    <div class="modal-header">
+                        <h3>📖 Game PDF Library</h3>
+                        <button type="button" id="btn-close-pdf-library" class="btn btn-secondary btn-sm">✕</button>
+                    </div>
+
+                    <!-- GM-Only Upload Bar -->
+                    <div id="pdf-upload-bar" class="library-upload-bar gm-only-control hidden">
+                        <span style="font-size: 0.85rem; color: var(--text-muted);">
+                            Upload rulebooks, adventures, character sheets, and handouts in PDF format.
+                        </span>
+                        <input type="file" id="pdf-file-input" accept=".pdf" multiple class="hidden">
+                        <button type="button" id="btn-upload-pdf" class="btn btn-primary btn-sm" style="flex-shrink: 0;">
+                            + Upload PDF(s)
+                        </button>
+                    </div>
+                    <div id="pdf-dropzone-cue" class="library-dropzone-cue gm-only-control hidden">📥 Drop PDF files anywhere here to upload</div>
+
+                    <!-- Player Info Bar (shown to non-GM players) -->
+                    <div id="pdf-player-info-bar" class="pdf-player-info-bar player-only-control hidden">
+                        <span>📖 Campaign rulebooks, handouts, and character sheets shared by the Game Master.</span>
+                    </div>
+
+                    <div class="library-search-bar">
+                        <input type="text" id="pdf-library-search" class="form-control form-control-sm" placeholder="🔍 Search PDFs by title...">
+                    </div>
+
+                    <!-- PDF Cards Grid/List -->
+                    <div id="pdf-library-grid" class="pdf-library-grid">
+                        <!-- Populated dynamically by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Embedded PDF Reader Floating Window (Opens above the main map area) -->
+            <div id="modal-pdf-viewer" class="modal-backdrop pdf-viewer-backdrop hidden">
+                <div class="modal-card pdf-viewer-card" id="pdf-viewer-card">
+                    <div class="modal-header pdf-viewer-header">
+                        <div class="pdf-viewer-title-group">
+                            <span class="pdf-viewer-icon">📖</span>
+                            <h3 id="pdf-viewer-title" class="pdf-viewer-title">Document.pdf</h3>
+                        </div>
+                        <div class="pdf-viewer-actions">
+                            <a id="btn-pdf-new-tab" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="Open in new browser tab / Pop out">
+                                ↗
+                            </a>
+                            <button type="button" id="btn-pdf-maximize" class="btn btn-secondary btn-sm" title="Toggle Fullscreen">
+                                ⛶
+                            </button>
+                            <button type="button" id="btn-close-pdf-viewer" class="btn btn-secondary btn-sm" title="Close Reader">
+                                ✕
+                            </button>
+                        </div>
+                    </div>
+                    <div class="pdf-viewer-body">
+                        <iframe id="pdf-viewer-frame" src="" class="pdf-viewer-frame" title="Embedded PDF Viewer"></iframe>
+                    </div>
+                </div>
+            </div>
+
             <!-- Left/Center Map Column (Map Tabs Bar + Large Open Tabletop Area) -->
             <div class="tabletop-column">
                 <div id="vtt-map-tabs-bar" class="map-tabs-bar">
@@ -556,7 +775,7 @@ session_start();
                     </div>
                 </div>
 
-                <!-- Bottom Toolbar on the Map Area -->
+                <!-- Left Toolbar on the Map Area -->
                 <div id="tabletop-toolbar" class="tabletop-toolbar">
                     <button type="button" id="btn-tool-pointer" class="tabletop-tool-btn active" title="Pointer Tool (V) — Select &amp; move tokens and maps">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
@@ -681,6 +900,19 @@ session_start();
                 </section>
 
                 <section class="manual-section">
+                    <h4>🎵 Music &amp; Playlists (Synchronized GM &amp; Player Audio)</h4>
+                    <p>The Game Master can create thematic playlists containing links to music on the web (such as MP3, WAV, OGG) or YouTube links. Playback is synchronized in real time across all players in the session.</p>
+                    <ul class="manual-list">
+                        <li><strong>Creating Playlists:</strong> Click <strong>🎵 Music</strong> on the GM toolbar to open the Music &amp; Playlists Library. Click <strong>+ New Playlist</strong>, give it a name, and add music tracks using YouTube URLs or web audio links (.mp3, etc.).</li>
+                        <li><strong>Synchronized Playback:</strong> When the GM plays any track (or clicks <strong>Play Playlist</strong>), the music starts playing simultaneously for all connected players.</li>
+                        <li><strong>GM Playback Controls:</strong> The GM can play/pause (<code>▶</code> / <code>⏸️</code>), jump to the next track (<code>⏭️</code>), return to the previous track (<code>⏮️</code>), or jump directly to any track in the playlist library.</li>
+                        <li><strong>Repeat Modes:</strong> Click the repeat button to toggle between <strong>🔁 Repeat Playlist</strong> (loops the entire playlist), <strong>🔂 Repeat Track</strong> (loops the active track), and <strong>➡️ No Repeat</strong> (stops at the end).</li>
+                        <li><strong>Local GM Muting:</strong> If the GM mutes their music or adjusts their volume slider, it only affects their own speakers — the music continues playing for all players!</li>
+                        <li><strong>Player Controls:</strong> Players have their own volume slider and a <strong>Disable Music</strong> toggle to adjust volume or turn off music entirely without affecting anyone else.</li>
+                    </ul>
+                </section>
+
+                <section class="manual-section">
                     <h4>👑 Campaign Ownership, GM Guide &amp; Admin</h4>
                     <ul class="manual-list">
                         <li><strong>Campaign Creation &amp; Ownership (GM):</strong> Every registered user can create campaigns in the Lobby (including a title, description, cover image, and invited players). The creator of a campaign is its initial <strong>Owner</strong>, and the <strong>Owner of a campaign is always its Game Master (GM)</strong>. Ownership can be transferred to another player at any time from the Lobby via <strong>✏️ Edit / Ownership</strong>.</li>
@@ -729,6 +961,20 @@ session_start();
         </div>
     </div>
 
+    <!-- Hidden Background Audio Player & YouTube API Container -->
+    <audio id="vtt-audio-player" preload="auto" class="hidden"></audio>
+    <div id="vtt-youtube-wrapper" class="vtt-youtube-wrapper">
+        <iframe id="vtt-youtube-player"
+            src="https://www.youtube.com/embed/?enablejsapi=1&playsinline=1&controls=0&rel=0&modestbranding=1"
+            allow="autoplay; encrypted-media"
+            allowfullscreen
+            frameborder="0"
+            width="200"
+            height="120">
+        </iframe>
+    </div>
+
+    <script src="https://www.youtube.com/iframe_api"></script>
     <script src="assets/js/dice3d.js"></script>
     <script src="assets/js/app.js"></script>
 </body>
